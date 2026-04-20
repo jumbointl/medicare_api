@@ -1,0 +1,533 @@
+<?php
+
+namespace App\Http\Controllers\Api\V1;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\Request;
+use App\Models\PathologistModel;
+use Illuminate\Support\Facades\Validator;
+use App\CentralLogics\Helpers;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use App\Models\User;
+use Illuminate\Support\Facades\Hash;
+use App\Models\RoleAssignModel;
+
+class PathologistController extends Controller
+{
+    //add new data
+    function addData(Request $request)
+    {
+
+        $validator = Validator::make(request()->all(), [
+            'title' => 'required',
+            'email' => 'required',
+            'password' => 'required',
+            'f_name'   => 'required',
+            'l_name'   => 'required',
+            'city_id'   => 'required',
+
+        ]);
+
+        if ($validator->fails())
+            return response(["response" => 400], 400);
+
+        try {
+
+            $alreadyAddedModel = User::where("email", $request->email)->first();
+            if ($alreadyAddedModel) {
+                return Helpers::errorResponse("email id already exists");
+            }
+
+            $alreadyAddedModel = PathologistModel::where("title", $request->title)->where("city_id", $request->city_id)->first();
+            if ($alreadyAddedModel) {
+                return Helpers::errorResponse("title already exists");
+            } else {
+                DB::beginTransaction();
+
+                $userModel = new User;
+
+                $userModel->email = $request->email;
+                $userModel->password = Hash::Make($request->password);
+
+
+
+                $userModel->f_name = $request->f_name;
+                $userModel->l_name = $request->l_name;
+                $qResponceC = $userModel->save();
+                if (!$qResponceC) {
+                    DB::rollBack();
+
+                    return Helpers::errorResponse("error");
+                }
+
+                $timeStamp = date("Y-m-d H:i:s");
+                $dataModel = new PathologistModel;
+
+                $dataModel->title = $request->title;
+
+
+                $dataModel->city_id  = $request->city_id;
+                $dataModel->user_id  = $userModel->id;
+                $dataModel->created_at = $timeStamp;
+                $dataModel->updated_at = $timeStamp;
+
+
+
+                $qResponce = $dataModel->save();
+                if ($qResponce) {
+
+                    $dataModelR = new RoleAssignModel;
+                    $dataModelR->role_id = 32;
+                    $dataModelR->user_id = $userModel->id;
+                    $dataModelR->created_at = $timeStamp;
+                    $dataModelR->updated_at = $timeStamp;
+                    $qResponceR = $dataModelR->save();
+
+                    if (!$qResponceR) {
+                        DB::rollBack();
+
+                        return Helpers::errorResponse("error");
+                    }
+
+
+                    $userModel = User::where("id", $userModel->id)->first();
+                    $userModel->pathologist_id =  $dataModel->id;
+                    $userModel->save();
+                    DB::commit();
+
+                    return Helpers::successWithIdResponse("successfully", $dataModel->id);
+                } else {
+                    DB::rollBack();
+
+                    return Helpers::errorResponse("error");
+                }
+            }
+        } catch (\Exception $e) {
+            DB::rollBack();
+
+            return Helpers::errorResponse("error $e");
+        }
+    }
+    // Update Deapartment
+    function updateData(Request $request)
+    {
+
+        $validator = Validator::make(request()->all(), [
+            'id' => 'required'
+        ]);
+        if ($validator->fails())
+            return response(["response" => 400], 400);
+        try {
+            DB::beginTransaction();
+            $dataModel = PathologistModel::where("id", $request->id)->first();
+            $userModel = User::where("id", $dataModel->user_id)->first();
+            if (isset($request->user_email)) {
+                $alreadyAddedModel = User::where("email", $request->user_email)->where('id', "!=", $userModel->id)->first();
+
+                if ($alreadyAddedModel) {
+                    return Helpers::errorResponse("user email already exists");
+                }
+            }
+            if (isset($request->user_email)) {
+                $userModel->email = $request->user_email;
+            }
+
+            if (isset($request->user_f_name)) {
+                $userModel->f_name = $request->user_f_name;
+            }
+            if (isset($request->user_l_name)) {
+                $userModel->l_name = $request->user_l_name;
+            }
+
+            if (isset($request->password)) {
+                $userModel->password = Hash::Make($request->password);
+            }
+
+
+            if (isset($request->title)) {
+                $alreadyExists = PathologistModel::where("title", $request->title)->where("city_id", $request->city_id)->where('id', "!=", $request->id)->first();
+                if ($alreadyExists != null) {
+                    return Helpers::errorResponse("title already exists");
+                } else {
+                    $dataModel->title = $request->title;
+                }
+            }
+            if (isset($request->email)) {
+                $alreadyExists = PathologistModel::where("email", $request->email)->where('id', "!=", $request->id)->first();
+                if ($alreadyExists != null) {
+                    return Helpers::errorResponse("Email id already exists");
+                }
+            }
+
+            if (isset($request->phone)) {
+                $alreadyExists = PathologistModel::where("phone", $request->phone)->where('id', "!=", $request->id)->first();
+                if ($alreadyExists != null) {
+                    return Helpers::errorResponse("Phone number already exists");
+                }
+            }
+
+
+
+            if (isset($request->address)) {
+                $dataModel->address = $request->address;
+            }
+            if (isset($request->latitude)) {
+                $dataModel->latitude = $request->latitude;
+            }
+            if (isset($request->longitude)) {
+                $dataModel->longitude = $request->longitude;
+            }
+            if (isset($request->active)) {
+                $dataModel->active = $request->active;
+            }
+            if (isset($request->description)) {
+                $dataModel->description = $request->description;
+            }
+
+            if (isset($request->email)) {
+                $dataModel->email = $request->email;
+            }
+            if (isset($request->phone)) {
+                $dataModel->phone = $request->phone;
+            }
+            if (isset($request->phone_second)) {
+                $dataModel->phone_second = $request->phone_second;
+            }
+
+            if (isset($request->stop_booking)) {
+                $dataModel->stop_booking = $request->stop_booking;
+            }
+               if (isset($request->is_show_contact_box)) {
+                $dataModel->is_show_contact_box = $request->is_show_contact_box;
+            }
+            if (isset($request->coupon_enable)) {
+                $dataModel->coupon_enable = $request->coupon_enable;
+            }
+            if (isset($request->tax)) {
+                $dataModel->tax = $request->tax;
+            }
+            if (isset($request->city_id)) {
+                $dataModel->city_id = $request->city_id;
+            }
+            if (isset($request->opening_hours)) {
+                $dataModel->opening_hours = $request->opening_hours;
+            }
+            if (isset($request->whatsapp)) {
+                $dataModel->whatsapp = $request->whatsapp;
+            }
+            if (isset($request->image)) {
+                if ($request->hasFile('image')) {
+
+                    $oldImage = $dataModel->image;
+                    $dataModel->image =  Helpers::uploadImage('pathologist/', $request->file('image'));
+                    if (isset($oldImage)) {
+                        if ($oldImage != "def.png") {
+                            Helpers::deleteImage($oldImage);
+                        }
+                    }
+                }
+            }
+
+            $timeStamp = date("Y-m-d H:i:s");
+            $dataModel->updated_at = $timeStamp;
+            $qResponce = $dataModel->save();
+            if ($qResponce) {
+                $userModel->save();
+                DB::commit();
+                return Helpers::successResponse("successfully");
+            } else {
+                DB::rollBack();
+                return Helpers::errorResponse("error");
+            }
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return Helpers::errorResponse("error");
+        }
+    }
+
+
+
+
+    // get data
+
+    function getData(Request $request)
+    {
+        // Define the base query
+        $query = DB::table("pathologist")
+            ->select(
+                'pathologist.*',
+                'cities.title as city_title',
+                'states.title as state_title'
+            )
+            ->join('cities', 'cities.id', '=', 'pathologist.city_id')
+            ->join('states', 'states.id', '=', 'cities.state_id')
+            ->orderBy('pathologist.created_at', 'desc');
+
+        // Apply filters
+        if (!empty($request->city_id)) {
+            $query->where('pathologist.city_id', $request->city_id);
+        }
+
+
+        if (!empty($request->active)) {
+            $query->where('pathologist.active', '=', $request->active);
+            $query->where('cities.active', '=', $request->active);
+        }
+
+        if ($request->has('search')) {
+            $search = $request->input('search');
+            $query->where(function ($q) use ($search) {
+                $q->where('pathologist.title', 'like', '%' . $search . '%')
+                    ->orWhere('pathologist.address', 'like', '%' . $search . '%');
+            });
+        }
+        if (!empty($request->pathology_id)) {
+            $query->where('pathologist.id', $request->pathology_id);
+        }
+
+        // Get total records before pagination
+        $total_record = $query->count();
+
+        // Handle pagination only if both 'start' and 'end' are provided and valid
+        if ($request->filled(['start', 'end'])) {
+            $start = $request->start;
+            $end = $request->end;
+            $query->skip($start)->take($end - $start);
+        }
+
+        // Fetch the data
+        $data = $query->get();
+        foreach ($data as $pathData) {
+            $dataDR = DB::table("lab_review")
+                ->select('lab_review.*')
+                ->where("lab_review.path_id", "=", $pathData->id)
+                ->get();
+
+            // Calculate the total review points
+            $totalReviewPoints = $dataDR->sum('points'); // Assuming 'review_points' is the column name for review points
+
+            // Count the number of reviews
+            $numberOfReviews = $dataDR->count();
+            // Calculate the average rating
+            $averageRating = $numberOfReviews > 0 ? number_format($totalReviewPoints / $numberOfReviews, 2) : '0.00';
+
+            $pathData->total_review_points = $totalReviewPoints;
+            $pathData->number_of_reviews = $numberOfReviews;
+            $pathData->average_rating = $averageRating;
+
+            $dataDApp = DB::table("lab_booking")
+                ->select('lab_booking.*')
+                ->where("lab_booking.pathology_id", "=", $pathData->id)
+                ->get();
+            // Calculate the total review points
+            $pathData->total_booking_done = count($dataDApp);
+        }
+
+        return response()->json([
+            "response" => 200,
+            "total_record" => $total_record,
+            "data" => $data,
+        ], 200);
+    }
+
+
+
+
+
+
+
+    // get data by id
+
+
+    function getDataById($id)
+    {
+
+        $data = DB::table("pathologist")
+            ->select(
+                'pathologist.*',
+                'cities.title as city_title',
+                'states.title as state_title',
+                'users.f_name as clinic_user_f_name',
+                'users.l_name as clinic_user_l_name',
+            )
+            ->where('pathologist.id', $id)
+            ->join('cities', 'cities.id', '=', 'pathologist.city_id')
+            ->join('states', 'states.id', '=', 'cities.state_id')
+
+            ->Leftjoin('users', 'users.id', '=', 'pathologist.user_id')
+            ->OrderBy('created_at', 'desc')
+            ->first();
+
+        if ($data) {
+            $data->pathology_image = DB::table("pathology_image")
+                ->select('pathology_image.*')
+                ->where('pathology_image.pathologist_id', $id)
+                ->OrderBy('created_at', 'desc')
+                ->get();
+
+            $dataDR = DB::table("lab_review")
+                ->select('lab_review.*')
+                ->where("lab_review.path_id", "=", $id)
+                ->get();
+
+            // Calculate the total review points
+            $totalReviewPoints = $dataDR->sum('points'); // Assuming 'review_points' is the column name for review points
+
+            // Count the number of reviews
+            $numberOfReviews = $dataDR->count();
+            // Calculate the average rating
+            $averageRating = $numberOfReviews > 0 ? number_format($totalReviewPoints / $numberOfReviews, 2) : '0.00';
+
+            $data->total_review_points = $totalReviewPoints;
+            $data->number_of_reviews = $numberOfReviews;
+            $data->average_rating = $averageRating;
+
+            $dataDApp = DB::table("lab_booking")
+                ->select('lab_booking.*')
+                ->where("lab_booking.pathology_id", "=", $id)
+                ->get();
+            // Calculate the total review points
+            $data->total_booking_done = count($dataDApp);
+        }
+
+        $response = [
+            "response" => 200,
+            'data' => $data,
+        ];
+
+        return response($response, 200);
+    }
+
+    public function getDataPeg(Request $request)
+    {
+
+
+        // Calculate the limit
+        $start = $request->start;
+        $end = $request->end;
+        $limit = ($end - $start);
+
+        // Define the base query
+
+        $query = DB::table("pathologist")
+            ->select(
+                'pathologist.*',
+                'cities.title as city_title',
+                'states.title as state_title'
+            )
+            ->join('cities', 'cities.id', '=', 'pathologist.city_id')
+            ->join('states', 'states.id', '=', 'cities.state_id')
+            ->OrderBy('created_at', 'desc');
+
+        if (!empty($request->city_id)) {
+            $query->where('pathologist.city_id', $request->city_id);
+        }
+
+        if (!empty($request->active)) {
+            $query->where('pathologist.active', '=', $request->active);
+        }
+
+        if ($request->has('search')) {
+            $search = $request->input('search');
+            $query->where(function ($q) use ($search) {
+                $q->where('pathologist.title', 'like', '%' . $search . '%')
+                    ->orWhere('pathologist.address', 'like', '%' . $search . '%');
+            });
+        }
+
+        $total_record = $query->get()->count();
+        $data = $query->skip($start)->take($limit)->get();
+
+        $response = [
+            "response" => 200,
+            "total_record" => $total_record,
+            'data' => $data,
+        ];
+
+        return response()->json($response, 200);
+    }
+
+
+    function removeImage(Request $request)
+    {
+
+
+        $validator = Validator::make(request()->all(), [
+            'id' => 'required'
+        ]);
+        if ($validator->fails())
+            return response(["response" => 400], 400);
+        try {
+            $dataModel = PathologistModel::where("id", $request->id)->first();
+
+
+            $oldImage = $dataModel->image;
+            if (isset($oldImage)) {
+                if ($oldImage != "def.png") {
+                    Helpers::deleteImage($oldImage);
+                }
+
+                $dataModel->image = null;
+            }
+
+            $timeStamp = date("Y-m-d H:i:s");
+            $dataModel->updated_at = $timeStamp;
+
+            $qResponce = $dataModel->save();
+            if ($qResponce)
+                return Helpers::successResponse("successfully");
+
+            else
+                return Helpers::errorResponse("error");
+        } catch (\Exception $e) {
+
+            return Helpers::errorResponse("error");
+        }
+    }
+
+
+    function deleteData(Request $request)
+    {
+        $validator = Validator::make(request()->all(), [
+            'id' => 'required'
+        ]);
+        if ($validator->fails())
+            return response(["response" => 400], 400);
+        try {
+            DB::beginTransaction();
+            $dataModel = PathologistModel::where("id", $request->id)->first();
+            $userId = $dataModel->user_id;
+            $oldImage = $dataModel->image;
+
+
+            DB::table('family_members')->where('user_id', $userId)->delete();
+            DB::table('users')->where('id', $userId)->update(['pathologist_id' => null]);
+            DB::table('users_role_assign')->where('user_id', $userId)->delete();
+            DB::table('pathologist')->where('id', $request->id)->delete();
+            DB::table('users')->where('id', $userId)->delete();
+
+            // $qResponce= $dataModel->delete();
+
+            // if($qResponce){
+
+            if (isset($oldImage)) {
+                if ($oldImage != "def.png") {
+                    Helpers::deleteImage($oldImage);
+                }
+            }
+            DB::commit();
+            return Helpers::successResponse("successfully Deleted");
+            //  }
+            //     else 
+            //   { 
+            //     DB::rollBack();
+            //     return Helpers::errorResponse("error");   
+            //  }
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return Helpers::errorResponse("This record cannot be deleted because it is linked to multiple data entries in the system. You can only deactivate it to prevent future use.");
+        }
+    }
+}

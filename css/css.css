@@ -1,0 +1,370 @@
+/* Add this to your CSS file */
+@import url("https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap");
+body {
+  margin: 0 !important;
+  font-family: "Inter", serif;
+  box-sizing: border-box;
+}
+/* Reset margin and padding for headings and paragraphs */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+.container {
+  width: 100%;
+  max-height: 100vh;
+}
+.mainSection {
+  background: url("./img/form_bg.png") no-repeat center center;
+  background-size: cover;
+  min-height: 100vh; /* Ensures the background covers the viewport height */
+  display: flex;
+  align-items: center; /* Centers content vertically */
+  justify-content: center; /* Centers content horizontally */
+}
+.main-header {
+  color: #fff;
+}
+.main-header h1 {
+  margin: 5px !important;
+  font-weight: 500;
+}
+.main-header h4 {
+  margin: 5px !important;
+  font-weight: 400;
+  font-size: 16px;
+}
+
+.card-main {
+  background-color: #fff;
+  padding: 12px;
+  margin-top: 24px;
+  border-radius: 12px;
+  box-shadow: rgba(99, 99, 99, 0.2) 0px 2px 8px 0px;
+  width: 800px;
+  max-width: 90vw;
+}
+.card-main p {
+  font-size: 15px;
+  text-align: center;
+}
+
+.group-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+.group-out {
+  padding: 20px;
+  border-radius: 5px;
+  max-width: 90%;
+  width: 700px;
+}
+
+.group {
+  padding: 20px;
+  border-radius: 5px;
+  max-width: 90%;
+  width: 700px;
+  background-color: #d6ecf7e0;
+  margin-top: 20px;
+}
+.grp-step-2 {
+  padding: 20px;
+  border-radius: 5px;
+  max-width: 90%;
+  width: 700px;
+  background-color: #d6ecf7e0;
+  margin-top: 20px;
+}
+
+.group p {
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+}
+.list-group {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr); /* Two equal columns */
+  gap: 20px; /* Add space between items */
+  padding: 0;
+  list-style: none;
+}
+
+.list-group .text-success {
+  color: rgba(55, 221, 93, 0.6); /* Adjust the opacity of the green color */
+}
+
+.list-group .text-danger {
+  color: rgba(240, 40, 60, 0.6); /* Adjust the opacity of the red color */
+}
+
+.list-group-item {
+  background-color: #2b2b2b; /* Set background color for items */
+  color: #fff; /* Text color */
+  padding: 10px;
+  border-radius: 5px; /* Rounded corners */
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  gap: 8px; /* Space between icon and text */
+  font-size: 12px;
+  font-weight: 500;
+}
+.group-main .final-last-text {
+  text-align: center !important;
+}
+
+.list-group-item li {
+  color: #f7a600; /* Icon color */
+}
+.list-group-item i {
+  color: #f7a600; /* Icon color */
+}
+
+.card-main .step-name {
+  font-size: 16px;
+  text-align: left !important;
+  font-weight: 500;
+}
+.card-main .step-subhead {
+  font-size: 13px;
+  text-align: left !important;
+  font-weight: 500;
+}
+
+.card-main .where {
+  width: 100%;
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 5px;
+}
+
+.card-main .where a {
+  font-size: 13px;
+  text-decoration: underline;
+  color: rgba(10, 133, 240, 0.993);
+  font-weight: 600;
+}
+.pt-5 {
+  font-size: 15px;
+  font-weight: 700;
+}
+.list-group-item {
+  padding: 10px 15px;
+  border-bottom: 1px solid #ccc;
+}
+
+.list-group-item:last-child {
+  border-bottom: none;
+}
+
+.btn-main {
+  margin-top: 20px;
+  margin-bottom: 10px;
+}
+.btn-custom {
+  background-color: #2b2b2b; /* Change this to your desired background color */
+  color: #fff; /* Text color */
+  padding: 8px 20px; /* Adjust padding to control button size */
+  border: none;
+  border-radius: 5px;
+  font-size: 14px; /* Adjust font size as needed */
+  text-decoration: none;
+  margin-top: 30px;
+  font-weight: 400;
+}
+
+.grp-form {
+  display: flex;
+  width: 700px;
+  width: 100%;
+}
+
+/* Ensure the form section takes full width */
+.form-section {
+  width: 100%;
+}
+
+/* Apply Flexbox to the form group to align items side by side */
+.custom-form-group {
+  display: flex;
+  justify-content: space-between;
+  gap: 40px; /* Add space between columns */
+}
+
+/* Ensure input fields have equal width */
+.custom-form-group .col-md-6 {
+  flex: 1;
+}
+
+/* Adjust the form control to fill the container */
+.form-control {
+  width: 100%;
+}
+
+.label-section {
+  display: block;
+  text-align: left;
+  font-size: 13px;
+  width: 100%;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+/* Change input background color and border */
+.input-section {
+  all: unset;
+  width: 100%;
+  max-width: 100%;
+  background-color: #fff;
+  padding: 12px 5px;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  border-radius: 0.5rem;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.308);
+  text-align: left;
+  padding-left: 12px;
+}
+
+/* Add some space for the submit button */
+.text-center {
+  margin-top: 20px;
+}
+
+.btn-custom:hover {
+  background-color: #0056b3; /* Change this to your desired hover background color */
+  color: #fff; /* Text color on hover */
+}
+.center-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  height: 100vh; /* This centers content vertically within the viewport height */
+  text-align: center;
+  padding-top: 72px;
+}
+
+/* Additional styles if needed */
+.center-content > * {
+  margin-bottom: 20px; /* Add spacing between elements if needed */
+}
+.h3-bg {
+  background-color: whitesmoke; /* Replace 'your-color-here' with your desired background color */
+  padding: 10px; /* Adjust padding as needed */
+}
+
+/* Add this to your CSS file */
+.custom-form-group {
+  margin-bottom: 20px;
+  font-size: 17px; /* Add spacing between form groups */
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.custom-form-group .input-section::placeholder {
+  font-weight: 500;
+  font-size: 15px;
+}
+
+.text-center {
+  text-align: center !important;
+}
+
+.db-imp-text {
+  font-size: 14px !important;
+  color: #141414;
+}
+
+/* Custom Alert Styling */
+.alert-danger {
+  background-color: #ec9aa1; /* Light red background */
+  border-color: #ec9aa1; /* Lighter border color */
+  color: #721c24; /* Dark red text */
+  padding: 15px;
+  font-size: 1rem;
+  border-radius: 5px; /* Rounded corners */
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.1); /* Soft shadow */
+}
+.alert-success {
+  background-color: #aaec9a; /* Light green background (for success) */
+  border-color: #71b74d; /* Slightly darker green border */
+  color: #155724; /* Dark green text */
+  padding: 15px;
+  font-size: 1rem;
+  border-radius: 5px; /* Rounded corners */
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.1); /* Soft shadow */
+}
+
+/* Optional: Hover effect to highlight the alert */
+.alert-danger:hover {
+  background-color: #f5c6cb; /* Light red background on hover */
+  cursor: pointer;
+}
+
+.btn-danger {
+  background-color: #f35050; /* Change this to your desired background color */
+  color: #fff; /* Text color */
+  padding: 8px 20px; /* Adjust padding to control button size */
+  border: none;
+  border-radius: 5px;
+  font-size: 14px; /* Adjust font size as needed */
+  text-decoration: none;
+  margin-top: 30px;
+  font-weight: 400;
+}
+.btn-success {
+  background-color: #0056b3; /* Change this to your desired background color */
+  color: #fff; /* Text color */
+  padding: 8px 20px; /* Adjust padding to control button size */
+  border: none;
+  border-radius: 5px;
+  font-size: 14px; /* Adjust font size as needed */
+  text-decoration: none;
+  margin-top: 30px;
+  font-weight: 400;
+}
+
+.card-success {
+  background: white;
+  padding: 60px;
+  border-radius: 4px;
+  box-shadow: 0 2px 3px #c8d0d8;
+  display: inline-block;
+  margin: 0 auto;
+  width: 600px;
+  margin-top: 60px;
+}
+
+.circle {
+  border-radius: 200px;
+  height: 200px;
+  width: 200px;
+  background: #f8faf5;
+  margin: 0 auto;
+}
+.circle i {
+  color: #9abc66;
+  font-size: 100px;
+  line-height: 200px;
+  margin-left: -15px;
+}
+.card-success h1 {
+  color: #88b04b;
+  font-weight: 700;
+  font-size: 28px;
+  margin-bottom: 10px;
+}
+
+.card-success p {
+  color: #404f5e;
+  font-size: 16px;
+  margin: 0;
+}
