@@ -260,6 +260,7 @@ class DoctorWebAppointmentController extends Controller
                 return response()->json([
                     'status' => false,
                     'message' => 'This appointment is not a video consultation.',
+                    'message_key' => 'video_join_not_video_consultation',
                 ], 400);
             }
 
@@ -267,6 +268,7 @@ class DoctorWebAppointmentController extends Controller
                 return response()->json([
                     'status' => false,
                     'message' => 'Appointment must be paid before joining video.',
+                    'message_key' => 'video_join_payment_required',
                 ], 400);
             }
 
@@ -274,6 +276,7 @@ class DoctorWebAppointmentController extends Controller
                 return response()->json([
                     'status' => false,
                     'message' => 'This appointment is not available for video call.',
+                    'message_key' => 'video_join_not_available',
                 ], 400);
             }
 
@@ -312,8 +315,12 @@ class DoctorWebAppointmentController extends Controller
                     return response()->json([
                         'status' => true,
                         'fallback_used' => false,
+                        'message' => 'Google Meet ready. Opening meeting link.',
+                        'message_key' => 'video_join_google_ready',
                         'data' => [
                             'provider' => 'google',
+                            'join_message' => 'Google Meet ready. Opening meeting link.',
+                            'join_message_key' => 'video_join_google_ready',
                             'meeting_id' => $appointment->meeting_id,
                             'meeting_link' => $appointment->meeting_link,
                             'google_calendar_event_id' => $appointment->google_calendar_event_id,
@@ -351,7 +358,20 @@ class DoctorWebAppointmentController extends Controller
             return response()->json([
                 'status' => true,
                 'fallback_used' => $fallbackUsed,
-                'data' => $agoraResult['data'],
+                'message' => $fallbackUsed
+                    ? 'Google Meet is not available right now. Opening internal video call.'
+                    : 'Internal video call ready.',
+                'message_key' => $fallbackUsed
+                    ? 'video_join_google_not_available_fallback_agora'
+                    : 'video_join_internal_ready',
+                'data' => array_merge($agoraResult['data'], [
+                    'join_message' => $fallbackUsed
+                        ? 'Google Meet is not available right now. Opening internal video call.'
+                        : 'Internal video call ready.',
+                    'join_message_key' => $fallbackUsed
+                        ? 'video_join_google_not_available_fallback_agora'
+                        : 'video_join_internal_ready',
+                ]),
             ], 200);
         } catch (\Throwable $e) {
             DB::rollBack();
@@ -368,6 +388,7 @@ class DoctorWebAppointmentController extends Controller
             return response()->json([
                 'status' => false,
                 'message' => 'Could not prepare video join data.',
+                'message_key' => 'video_join_prepare_failed',
                 'error' => $e->getMessage(),
             ], 500);
         }
