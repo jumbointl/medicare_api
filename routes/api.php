@@ -97,6 +97,9 @@ use App\Http\Controllers\Api\V1\DoctorWeb\DoctorWebPatientFileController;
 use App\Http\Controllers\Api\V1\DoctorWeb\DoctorWebReviewController;
 use App\Http\Controllers\Api\V1\DoctorWeb\DoctorWebNotificationController;
 use App\Http\Controllers\Api\V1\DoctorWeb\DoctorGoogleCalendarController;
+use App\Http\Controllers\Api\V1\PaymentTypeController;
+use App\Http\Controllers\Api\V1\ClinicDoctorBrowseController;
+
 /*
 |--------------------------------------------------------------------------
 | API Routes
@@ -110,6 +113,12 @@ use App\Http\Controllers\Api\V1\DoctorWeb\DoctorGoogleCalendarController;
 
 
 Route::prefix('v1')->group(function () {
+
+
+    Route::get('get_city_clinics', [ClinicDoctorBrowseController::class, 'getCityClinics']);
+    Route::get('get_clinic_doctors', [ClinicDoctorBrowseController::class, 'getClinicDoctors']);
+    Route::get('get_city_clinics_with_doctors', [ClinicDoctorBrowseController::class, 'getCityClinicsWithDoctors']);
+
     Route::middleware(['auth:sanctum'])->prefix('doctor-web')->group(function () {
         Route::get('/google-calendar/connect-url', [DoctorGoogleCalendarController::class, 'getConnectUrl']);
         Route::get('/google-calendar/status', [DoctorGoogleCalendarController::class, 'status']);
@@ -119,9 +128,16 @@ Route::prefix('v1')->group(function () {
     Route::get('/doctor-web/google-calendar/callback', [DoctorGoogleCalendarController::class, 'callback']);
 
     Route::middleware('auth:sanctum')->post(
-    'appointments/{id}/video/join-data',
-    [AppointmentController::class, 'getVideoJoinData']
-);
+        'appointments/{id}/video/join-data',
+        [AppointmentController::class, 'getVideoJoinData']
+    );
+    Route::get('/clinics/{clinicId}/doctors', [ClinicDoctorController::class, 'getDoctorsByClinic']);
+
+    Route::get('/doctors/{doctorId}/clinics/{clinicId}/time-slots', [TimeSlotsController::class, 'getDoctorClinicSlots']);
+    Route::get('/doctors/{doctorId}/clinics/{clinicId}/time-interval/{day}', [TimeSlotsController::class, 'getDoctorClinicTimeInterval']);
+
+    Route::get('/doctors/{doctorId}/clinics/{clinicId}/video-time-slots', [TimeSlotsVideoController::class, 'getDoctorClinicVideoSlots']);
+    Route::get('/doctors/{doctorId}/clinics/{clinicId}/video-time-interval/{day}', [TimeSlotsVideoController::class, 'getDoctorClinicVideoTimeInterval']);
 });
 
 
@@ -186,11 +202,13 @@ Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
     return $request->user();
 });
 
+
+
 Route::group(['prefix' => 'v1', 'namespace' => 'api\v1', 'middleware' => 'auth:sanctum'], function () {
 
     Route::post("payment_initiate", [PaymentInitiateController::class, 'initiate']);
 
-
+    Route::get('get_payment_types', [PaymentTypeController::class, 'getData']);
     //Users
 
     Route::post("update_password", [UserController::class, 'updatePassword']);
@@ -244,7 +262,7 @@ Route::group(['prefix' => 'v1', 'namespace' => 'api\v1', 'middleware' => 'auth:s
     Route::post("update_specialization", [SpecializationController::class, 'updateData']);
     Route::post("delete_specialization", [SpecializationController::class, 'deleteData']);
 
-
+  
 
 
 
@@ -254,7 +272,7 @@ Route::group(['prefix' => 'v1', 'namespace' => 'api\v1', 'middleware' => 'auth:s
     Route::post("remove_doctor_image", [DoctorController::class, 'removeImage']);
     Route::post("update_doctor", [DoctorController::class, 'updateData']);
     Route::post("delete_doctor", [DoctorController::class, 'deleteData']);
-
+    Route::post('update_doctor_clinic_status', [DoctorController::class, 'updateDoctorClinicStatus']);
 
     //Doctors Review 
     Route::post("add_doctor_review", [DoctorsReviewController::class, 'addData']);
@@ -282,6 +300,7 @@ Route::group(['prefix' => 'v1', 'namespace' => 'api\v1', 'middleware' => 'auth:s
 
     //Appointments
     Route::post("add_appointment", [AppointmentController::class, 'addData']);
+    Route::post('add_first_appointment', [AppointmentController::class, 'addDataFirstAppointment']);
     Route::post("update_appointment_status", [AppointmentController::class, 'updateStatus']);
     Route::post("appointment_rescheduled", [AppointmentController::class, 'appointmentResch']);
     Route::post("update_appointment_to_paid", [AppointmentController::class, 'updateStatusToPaid']);
@@ -556,6 +575,8 @@ Route::group(['prefix' => 'v1', 'namespace' => 'api\v1', 'middleware' => 'auth:s
 Route::group(['prefix' => 'v1', 'namespace' => 'api\v1', 'middleware' => 'api.key'], function () {
 
 
+
+
     Route::post("login", [LoginController::class, 'login']);
     Route::post("login_phone", [LoginController::class, 'loginMobile']);
     Route::post("re_login_phone", [LoginController::class, 'ReLoginMobile']);
@@ -565,7 +586,9 @@ Route::group(['prefix' => 'v1', 'namespace' => 'api\v1', 'middleware' => 'api.ke
     Route::get("get_specialization", [SpecializationController::class, 'getData']);
     Route::get("get_specialization/{id}", [SpecializationController::class, 'getDataById']);
 
-
+    //Doctors
+    Route::get("get_doctor", [DoctorController::class, 'getData']);
+    Route::get("get_doctor/{id}", [DoctorController::class, 'getDataById']);
 
 
     //Department
@@ -583,15 +606,12 @@ Route::group(['prefix' => 'v1', 'namespace' => 'api\v1', 'middleware' => 'api.ke
     Route::get("get_path_test", [PathologyTestController::class, 'getData']);
     Route::get("get_path_test/{id}", [PathologyTestController::class, 'getDataById']);
 
-    //Doctors
-    Route::get("get_doctor", [DoctorController::class, 'getData']);
-    Route::get("get_doctor/{id}", [DoctorController::class, 'getDataById']);
+
 
 
     //Doctors Review 
-    //Route::get("get_doctor_review/doctor/{id}", [DoctorsReviewController::class, 'getDataByDoctorId']);
     Route::get("get_all_doctor_review", [DoctorsReviewController::class, 'getData']);
-    // Route::get("get_doctor_review_page", [DoctorsReviewController::class, 'getDataPeg']);
+    
 
 
 
@@ -599,9 +619,6 @@ Route::group(['prefix' => 'v1', 'namespace' => 'api\v1', 'middleware' => 'api.ke
     Route::get("get_patients", [PatientController::class, 'getData']);
     Route::get("get_patients/{id}", [PatientController::class, 'getDataById']);
     Route::get("get_patient_by_mrn/{mrn}", [PatientController::class, 'getDataByMrn']);
-    // Route::get("get_patients/user/{id}", [PatientController::class, 'getDataByUID']);
-    // Route::get("get_patients_date", [PatientController::class, 'getDataByDate']);
-    // Route::get("get_patient/page", [PatientController::class, 'getDataPeg']);
 
     //Role
     Route::get("get_roles", [RoleController::class, 'getData']);
@@ -770,8 +787,7 @@ Route::group(['prefix' => 'v1', 'namespace' => 'api\v1', 'middleware' => 'api.ke
     Route::get("get_appointment_check_in/{id}", [AppointmentCheckinController::class, 'getDataById']);
 
 
-    //WebhookController
-    //Route::post("test_centreliz_logic", [WebhookController::class, 'centrelizeData']);
+    
 
 
 

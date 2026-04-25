@@ -1,7 +1,7 @@
 <?php
 
 namespace App\Http\Controllers\Api\V1;
-
+use App\Models\DoctorsModel;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\ClinicDoctorModel;
@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Validator;
 use App\CentralLogics\Helpers;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+
 
 
 class ClinicDoctorController extends Controller
@@ -142,6 +143,22 @@ class ClinicDoctorController extends Controller
                         return Helpers::errorResponse("error");
                       }         
         
+        }
+        public function getDoctorsByClinic($clinicId)
+        {
+            $doctorIds = DB::table('doctor_clinics')
+                ->where('clinic_id', $clinicId)
+                ->where('is_active', 1)
+                ->pluck('doctor_id');
+
+            $doctors = DoctorsModel::query()
+                ->whereIn('id', $doctorIds)
+                ->get();
+
+            return response()->json([
+                'status' => true,
+                'data' => $doctors,
+            ]);
         }
 
 }

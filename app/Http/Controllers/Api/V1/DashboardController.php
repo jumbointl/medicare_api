@@ -78,36 +78,83 @@ class DashboardController extends Controller
 
         return response($response, 200);
     }
-    function getDataDashBoardCountByDoctor($id)
+    function getDataDashBoardCountByDoctor(Request $request, $id)
     {
-        $todatDate = date("Y-m-d");
-        $totalAppointment = AppointmentModel::Where('doct_id',$id)->count();
-        $total_today_appointment = AppointmentModel::Where('doct_id',$id)->Where("date", $todatDate)->count();
-        $total_pending_appointment = AppointmentModel::Where('doct_id',$id)->Where("status", "Pending")->count();  
-        $total_confirmed_appointment = AppointmentModel::Where('doct_id',$id)->Where("status", "Confirmed")->count();  
-        $total_rejected_appointment = AppointmentModel::Where('doct_id',$id)->Where("status", "Rejected")->count();  
-        $total_cancelled_appointment = AppointmentModel::Where('doct_id',$id)->Where("status", "Cancelled")->count();   
-        $total_completed_appointment = AppointmentModel::Where('doct_id',$id)->Where("status", "Completed")->count();  
-        $total_visited_appointment = AppointmentModel::Where('doct_id',$id)->Where("status", "Visited")->count();  
-        $total_upcoming_appointments = AppointmentModel::Where('doct_id',$id)->Where("date", ">", $todatDate)->count();
+        $todayDate = date("Y-m-d");
+        $clinicId = $request->query('clinic_id');
 
-        $total_cancel_req_initiated_appointment = AppointmentModel::Where('doct_id',$id)->Where("current_cancel_req_status", "Initiated")->count();  
-        $total_cancel_req_rejected_appointment = AppointmentModel::Where('doct_id',$id)->Where("current_cancel_req_status", "Rejected")->count();  
-        $total_cancel_req_approved_appointment = AppointmentModel::Where('doct_id',$id)->Where("current_cancel_req_status", "Approved")->count();  
-        $total_cancel_req_processing_appointment = AppointmentModel::Where('doct_id',$id)->Where("current_cancel_req_status", "Processing")->count();  
-        $total_prescriptions =  $prescriptions = DB::table('appointments')
-        ->select('appointments.doct_id', 
-         'prescription.*' 
-         )
-         ->where('appointments.doct_id', '=', $id)
-         ->Join('prescription', 'prescription.appointment_id', '=', 'appointments.id')
+        $appointmentsQuery = AppointmentModel::query()
+            ->where('doct_id', $id);
+
+        if (!empty($clinicId)) {
+            $appointmentsQuery->where('clinic_id', $clinicId);
+        }
+
+        $totalAppointment = (clone $appointmentsQuery)->count();
+        $total_today_appointment = (clone $appointmentsQuery)
+            ->where("date", $todayDate)
             ->count();
-        $total_medicine =PrescribeMedicinesModel::count();
-        $total_doctors_review = DoctorsReviewModel::Where('doctor_id',$id)->count();
+
+        $total_pending_appointment = (clone $appointmentsQuery)
+            ->where("status", "Pending")
+            ->count();
+
+        $total_confirmed_appointment = (clone $appointmentsQuery)
+            ->where("status", "Confirmed")
+            ->count();
+
+        $total_rejected_appointment = (clone $appointmentsQuery)
+            ->where("status", "Rejected")
+            ->count();
+
+        $total_cancelled_appointment = (clone $appointmentsQuery)
+            ->where("status", "Cancelled")
+            ->count();
+
+        $total_completed_appointment = (clone $appointmentsQuery)
+            ->where("status", "Completed")
+            ->count();
+
+        $total_visited_appointment = (clone $appointmentsQuery)
+            ->where("status", "Visited")
+            ->count();
+
+        $total_upcoming_appointments = (clone $appointmentsQuery)
+            ->where("date", ">", $todayDate)
+            ->count();
+
+        $total_cancel_req_initiated_appointment = (clone $appointmentsQuery)
+            ->where("current_cancel_req_status", "Initiated")
+            ->count();
+
+        $total_cancel_req_rejected_appointment = (clone $appointmentsQuery)
+            ->where("current_cancel_req_status", "Rejected")
+            ->count();
+
+        $total_cancel_req_approved_appointment = (clone $appointmentsQuery)
+            ->where("current_cancel_req_status", "Approved")
+            ->count();
+
+        $total_cancel_req_processing_appointment = (clone $appointmentsQuery)
+            ->where("current_cancel_req_status", "Processing")
+            ->count();
+
+        $total_prescriptions = DB::table('appointments')
+            ->join('prescription', 'prescription.appointment_id', '=', 'appointments.id')
+            ->where('appointments.doct_id', '=', $id)
+            ->when(!empty($clinicId), function ($query) use ($clinicId) {
+                $query->where('appointments.clinic_id', '=', $clinicId);
+            })
+            ->count();
+
+        $total_medicine = PrescribeMedicinesModel::count();
+
+        $total_doctors_review = DoctorsReviewModel::where('doctor_id', $id)->count();
+
         $response = [
             "response" => 200,
             'data' => [
-                "today_date" => $todatDate,
+                "today_date" => $todayDate,
                 "total_today_appointment" => $total_today_appointment,
                 "total_appointments" => $totalAppointment,
                 "total_pending_appointment" => $total_pending_appointment,
@@ -117,13 +164,13 @@ class DashboardController extends Controller
                 "total_completed_appointment" => $total_completed_appointment,
                 "total_visited_appointment" => $total_visited_appointment,
                 "total_upcoming_appointments" => $total_upcoming_appointments,
-                "total_prescriptions"=>$total_prescriptions,
-                "total_medicine"=>$total_medicine,
-                "total_doctors_review"=>$total_doctors_review,
-                "total_cancel_req_initiated_appointment"=>$total_cancel_req_initiated_appointment,
-                "total_cancel_req_rejected_appointment"=>$total_cancel_req_rejected_appointment,
-                "total_cancel_req_approved_appointment"=>$total_cancel_req_approved_appointment,
-                "total_cancel_req_processing_appointment"=>$total_cancel_req_processing_appointment
+                "total_prescriptions" => $total_prescriptions,
+                "total_medicine" => $total_medicine,
+                "total_doctors_review" => $total_doctors_review,
+                "total_cancel_req_initiated_appointment" => $total_cancel_req_initiated_appointment,
+                "total_cancel_req_rejected_appointment" => $total_cancel_req_rejected_appointment,
+                "total_cancel_req_approved_appointment" => $total_cancel_req_approved_appointment,
+                "total_cancel_req_processing_appointment" => $total_cancel_req_processing_appointment,
             ]
         ];
 

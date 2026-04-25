@@ -4,22 +4,32 @@ namespace App\Http\Controllers\Api\V1\DoctorWeb;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
-use App\Services\DoctorWeb\DoctorWebAccessService;
+use App\Models\VUser;
+use App\Services\UserNormalizerService;
 use Google\Client as GoogleClient;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
 
 class DoctorWebAuthController extends Controller
 {
     public function __construct(
-        private DoctorWebAccessService $accessService
-    ) {}
+        private UserNormalizerService $userNormalizerService
+    ) {
+    }
 
-    private function getAllowedGoogleClientIds(): array
+    private function findDoctorVUserByEmail(string $email): ?VUser
     {
-        return config('services.google.allowed_client_ids', []);
+        $row = VUser::query()
+            ->whereRaw('LOWER(email) = ?', [strtolower(trim($email))])
+            ->where('is_deleted', 0)
+            ->first();
+
+        if (!$row || empty($row->doctor_id)) {
+            return null;
+        }
+
+        return $row;
     }
 
     public function login(Request $request)
@@ -37,36 +47,57 @@ class DoctorWebAuthController extends Controller
             ], 400);
         }
 
-        $user = User::whereRaw('LOWER(email) = ?', [strtolower(trim($request->email))])
-            ->where('is_deleted', false)
-            ->first();
+        \Log::info('DOCTOR_LOGIN request', [
+            'email' => $request->email,
+        ]);
 
-        if (!$user || !Hash::check($request->password, $user->password)) {
+        $vUser = $this->findDoctorVUserByEmail($request->email);
+
+        if (!$vUser || !Hash::check($request->password, (string) $vUser->password)) {
             return response()->json([
                 'status' => false,
                 'message' => 'These credentials do not match our records.',
             ], 200);
         }
 
-        try {
-            $doctor = $this->accessService->ensureDoctor($user);
-        } catch (\RuntimeException $e) {
+        $user = User::find($vUser->id);
+
+        if (!$user) {
             return response()->json([
                 'status' => false,
-                'message' => 'This account is not a doctor account.',
-            ], 200);
+                'message' => 'User not found.',
+            ], 404);
         }
 
+        \Log::info('DOCTOR_LOGIN vUser found', [
+            'exists' => !!$vUser,
+            'id' => $vUser->id ?? null,
+            'email' => $vUser->email ?? null,
+            'doctor_id' => $vUser->doctor_id ?? null,
+            'roles_raw' => $vUser->roles ?? null,
+            'doctor_raw' => $vUser->doctor ?? null,
+            'clinics_raw' => $vUser->clinics ?? null,
+        ]);
+
         $token = $user->createToken('doctor-web-token')->plainTextToken;
+
+        $normalized = $this->userNormalizerService->normalizeUser($vUser);
+
+        \Log::info('DOCTOR_LOGIN success_payload', [
+            'id' => $normalized['id'] ?? null,
+            'doctor_id' => $normalized['doctor_id'] ?? null,
+            'roles' => $normalized['roles'] ?? [],
+            'role' => $normalized['role'] ?? null,
+            'doctor' => $normalized['doctor'] ?? null,
+            'clinics_count' => count($normalized['clinics'] ?? []),
+            'owner_clinic' => $normalized['owner_clinic'] ?? null,
+        ]);
 
         return response()->json([
             'status' => true,
             'message' => 'Successfully',
             'token' => $token,
-            'data' => [
-                'user' => $user,
-                'doctor' => $doctor,
-            ],
+            'data' => $normalized,
         ], 200);
     }
 
@@ -85,112 +116,68 @@ class DoctorWebAuthController extends Controller
             ], 400);
         }
 
-        try {
-            DB::beginTransaction();
+        $client = new GoogleClient();
+        $payload = $client->verifyIdToken($request->id_token);
 
-            $client = new GoogleClient();
-            $payload = $client->verifyIdToken($request->id_token);
-
-            if (!$payload) {
-                return response()->json([
-                    'status' => false,
-                    'message' => 'Invalid Google token',
-                ], 200);
-            }
-
-            $allowedAudiences = $this->getAllowedGoogleClientIds();
-            $aud = $payload['aud'] ?? null;
-            $sub = $payload['sub'] ?? null;
-            $email = isset($payload['email']) ? strtolower(trim($payload['email'])) : null;
-            $requestedEmail = strtolower(trim($request->email));
-            $emailVerified = filter_var($payload['email_verified'] ?? false, FILTER_VALIDATE_BOOLEAN);
-
-            if (!$sub || !$aud || !in_array($aud, $allowedAudiences, true)) {
-                return response()->json([
-                    'status' => false,
-                    'message' => 'Token audience is not allowed',
-                ], 200);
-            }
-
-            if (!$email || !$emailVerified) {
-                return response()->json([
-                    'status' => false,
-                    'message' => 'Google email is not verified',
-                ], 200);
-            }
-
-            if ($requestedEmail !== $email) {
-                return response()->json([
-                    'status' => false,
-                    'message' => 'Google email does not match token email',
-                ], 200);
-            }
-
-            $user = User::whereRaw('LOWER(email) = ?', [$email])
-                ->where('is_deleted', false)
-                ->first();
-
-            if (!$user) {
-                DB::rollBack();
-                return response()->json([
-                    'status' => false,
-                    'message' => 'These credentials do not match our records.',
-                ], 200);
-            }
-
-            try {
-                $doctor = $this->accessService->ensureDoctor($user);
-            } catch (\RuntimeException $e) {
-                DB::rollBack();
-                return response()->json([
-                    'status' => false,
-                    'message' => 'This account is not a doctor account.',
-                ], 200);
-            }
-
-            if (!empty($user->google_id) && $user->google_id !== $sub) {
-                DB::rollBack();
-                return response()->json([
-                    'status' => false,
-                    'message' => 'This doctor account is linked to another Google account.',
-                ], 200);
-            }
-
-            $user->google_id = $sub;
-            $user->auth_provider = 'google';
-            $user->save();
-
-            $token = $user->createToken('doctor-web-token')->plainTextToken;
-
-            DB::commit();
-
-            return response()->json([
-                'status' => true,
-                'message' => 'Successfully',
-                'token' => $token,
-                'data' => [
-                    'user' => $user,
-                    'doctor' => $doctor,
-                ],
-            ], 200);
-        } catch (\Throwable $e) {
-            DB::rollBack();
-
+        if (!$payload) {
             return response()->json([
                 'status' => false,
-                'message' => 'Login with Google failed',
-                'error' => $e->getMessage(),
+                'message' => 'Invalid Google token',
             ], 200);
         }
+
+        $email = isset($payload['email']) ? strtolower(trim($payload['email'])) : null;
+        $requestedEmail = strtolower(trim($request->email));
+
+        if (!$email || $email !== $requestedEmail) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Google account email does not match.',
+            ], 200);
+        }
+
+        $vUser = $this->findDoctorVUserByEmail($email);
+
+        if (!$vUser) {
+            return response()->json([
+                'status' => false,
+                'message' => 'This account is not a doctor account.',
+            ], 200);
+        }
+
+        $user = User::find($vUser->id);
+
+        if (!$user) {
+            return response()->json([
+                'status' => false,
+                'message' => 'User not found.',
+            ], 404);
+        }
+
+        $token = $user->createToken('doctor-web-token')->plainTextToken;
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Successfully',
+            'token' => $token,
+            'data' => $this->userNormalizerService->normalizeUser($vUser),
+        ], 200);
     }
 
     public function me(Request $request)
     {
         $user = $request->user();
 
-        try {
-            $doctor = $this->accessService->ensureDoctor($user);
-        } catch (\RuntimeException $e) {
+        if (!$user) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Unauthenticated.',
+            ], 401);
+        }
+
+        $vUser = VUser::query()->where('id', $user->id)->first();
+
+        if (!$vUser || empty($vUser->doctor_id)) {
             return response()->json([
                 'status' => false,
                 'message' => 'Doctor profile not found.',
@@ -199,24 +186,7 @@ class DoctorWebAuthController extends Controller
 
         return response()->json([
             'status' => true,
-            'data' => [
-                'user' => $user,
-                'doctor' => $doctor,
-            ],
-        ], 200);
-    }
-
-    public function logout(Request $request)
-    {
-        $user = $request->user();
-
-        if ($user?->currentAccessToken()) {
-            $user->currentAccessToken()->delete();
-        }
-
-        return response()->json([
-            'status' => true,
-            'message' => 'Logged out successfully.',
+            'data' => $this->userNormalizerService->normalizeUser($vUser),
         ], 200);
     }
 }

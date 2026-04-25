@@ -1,208 +1,247 @@
 <?php
 
 namespace App\Http\Controllers\Api\V1;
+
 use App\Http\Controllers\Controller;
-use Illuminate\Http\Request;
 use App\Models\TimeSlotsModel;
-use Illuminate\Support\Facades\Validator;
-use App\CentralLogics\Helpers;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Validation\Rule;
+
 class TimeSlotsController extends Controller
 {
-
-      //delete data
-      function deleteData(Request $request){
-
-    
-        $validator = Validator::make(request()->all(), [
-            'id' => 'required',
-      ]);
-      if ($validator->fails())
-      return response (["response"=>400],400);
-     
-      try{               
-                $dataModel= TimeSlotsModel::where("id",$request->id)->first();
-                                              
-                $qResponce= $dataModel->delete();
-                if($qResponce)
-               {
-             
-                return Helpers::successWithIdResponse("successfully",$dataModel->id);}
-            
-                else 
-                {  
-                    
-                    return Helpers::errorResponse("error");}
-            
-           
-        }
-
-     catch(\Exception $e){
-             DB::rollBack();
-              
-                    return Helpers::errorResponse("error");
-                  }
-}
-
-    //add new data
-    function addData(Request $request){
-
-    
-        $validator = Validator::make(request()->all(), [
-            'doct_id' => 'required',
-            'time_duration' => 'required',
-            'day' => ['required', Rule::in(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'])],
-            'time_start' => 'required|date_format:H:i',
-            'time_end' => 'required|date_format:H:i|after:time_start'
-      ]);
-      if ($validator->fails())
-      return response (["response"=>400],400);
-     
-      try{
-        // check time dif
-           $time1 = strtotime($request->time_start);
-            $time2 = strtotime($request->time_end);
-
-            // Calculate the difference in minutes
-            $diffInMinutes = ($time2 - $time1) / 60;
-
-            if( $diffInMinutes<$request->time_duration ){
-                return Helpers::errorResponse("please choose the correct time duration");
-            }
-          
-    
-     
-        //check time between
-        $alreadyAddedModel = TimeSlotsModel::where('day', $request->day)
-        ->where('doct_id', $request->doct_id)
-        
-        ->where(function($query) use ($request) {
-            $query->where('time_start', '<=', $request->time_end)
-                ->where('time_end', '>=', $request->time_start);
-        })->first();
-            if($alreadyAddedModel)
-            {
-                return Helpers::errorResponse("time already exists");
-            
-            }
-            else{
-           
-                $timeStamp= date("Y-m-d H:i:s");
-                $dataModel=new TimeSlotsModel;
-                
-                $dataModel->doct_id = $request->doct_id;
-                $dataModel->time_start = $request->time_start;
-                $dataModel->time_end = $request->time_end;
-                $dataModel->time_duration = $request->time_duration;
-                $dataModel->day = $request->day;
-                $dataModel->created_at=$timeStamp;
-                $dataModel->updated_at=$timeStamp;
-               
-                $qResponce = $dataModel->save();
-                if($qResponce)
-               {
-             
-                return Helpers::successWithIdResponse("successfully",$dataModel->id);}
-            
-                else 
-                {  
-                    
-                    return Helpers::errorResponse("error");}
-            }
-           
-        }
-
-     catch(\Exception $e){
-             DB::rollBack();
-              
-                    return Helpers::errorResponse("error");
-                  }
-}
-
-function getDataByDoctId($id)
-{
-
-  $data = DB::table("time_slots")
-  ->select('time_slots.*'
-  )->where("time_slots.doct_id","=",$id)
-  ->orderBy('time_start', 'ASC')
-    ->get();
-  
-        $response = [
-            "response"=>200,
-            'data'=>$data,
-        ];
-    
-  return response($response, 200);
-    }
-
-       // get data by id
-
-function getDataById($id)
-{
-
-  $data = DB::table("time_slots")
-  ->select('time_slots.*')
-  ->where('id','=',$id)
-    ->first();
-  
-        $response = [
-            "response"=>200,
-            'data'=>$data,
-        ];
-    
-  return response($response, 200);
-    }
-    function getDataDoctotToimeInterval($doct_id,$day)
+    public function addData(Request $request)
     {
-    
-      $data = DB::table("time_slots")
-      ->select('time_slots.*')
-      ->where('doct_id','=',$doct_id)
-      ->where('day','=',$day)
-      ->orderBy('time_start', 'ASC')
-        ->get();
-        $slots = [];
-        if($data){
-            if(count($data)>0){
-                foreach ($data as $time_slots) {
-                    
-                    $start_time = strtotime($time_slots->time_start); // Replace with your start time
-                    $end_time = strtotime($time_slots->time_end);   // Replace with your end time
-                    $time_duration = $time_slots->time_duration;; // Duration in minutes
-                    
-               
-                    $current_time = $start_time;
-                    
-                    while ($current_time <= $end_time) {
-                        $slot_start = date('H:i', $current_time);
-                        $current_time += $time_duration * 60; // Add duration in seconds
-                        $slot_end = date('H:i', $current_time);
-                        
-                        if ($current_time <= $end_time) {
-                            $slots[] = ["time_start" => $slot_start, "time_end" => $slot_end];
-                        }
-                    }
-                }
-                
+        $request->validate([
+            'doct_id' => 'required|integer',
+            'clinic_id' => 'required|integer',
+            'day' => 'required|string',
+            'time_start' => 'required',
+            'time_end' => 'required',
+            'time_duration' => 'required|integer|min:1',
+        ]);
+
+        $doctorId = (int) $request->doct_id;
+        $clinicId = (int) $request->clinic_id;
+
+        $doctor = DB::table('doctors')
+            ->select('id', 'user_id')
+            ->where('id', $doctorId)
+            ->first();
+
+        if (!$doctor) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Doctor not found.',
+            ], 422);
         }
+
+        $doctorClinic = DB::table('user_clinics')
+            ->where('user_id', $doctor->user_id)
+            ->where('clinic_id', $clinicId)
+            ->where('is_active', 1)
+            ->exists();
+
+        if (!$doctorClinic) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Doctor does not belong to the selected clinic.',
+            ], 422);
+        }
+
+        $slot = new TimeSlotsModel();
+        $slot->doct_id = $doctorId;
+        $slot->clinic_id = $clinicId;
+        $slot->day = $request->day;
+        $slot->time_start = $request->time_start;
+        $slot->time_end = $request->time_end;
+        $slot->time_duration = (int) $request->time_duration;
+        $slot->save();
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Time slot created successfully.',
+            'data' => $slot,
+        ], 200);
     }
-      
-            $response = [
-                "response"=>200,
-                'data'=>$slots,
-            ];
-        
-      return response($response, 200);
 
+    public function deleteData(Request $request)
+    {
+        $request->validate([
+            'id' => 'required|integer',
+        ]);
 
+        $slot = TimeSlotsModel::find($request->id);
 
-// Display all slots
-foreach ($slots as $slot) {
-    echo "Slot: {$slot['start']} - {$slot['end']}\n";
-}
+        if (!$slot) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Time slot not found.',
+            ], 404);
         }
 
+        $slot->delete();
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Time slot deleted successfully.',
+        ], 200);
+    }
+
+    public function getData(Request $request)
+    {
+        $query = TimeSlotsModel::query();
+
+        if ($request->filled('doct_id')) {
+            $query->where('doct_id', (int) $request->doct_id);
+        }
+
+        if ($request->filled('clinic_id')) {
+            $query->where('clinic_id', (int) $request->clinic_id);
+        }
+
+        if ($request->filled('day')) {
+            $query->where('day', $request->day);
+        }
+
+        $data = $query
+            ->orderBy('day')
+            ->orderBy('time_start')
+            ->get();
+
+        return response()->json([
+            'response' => 200,
+            'data' => $data,
+        ], 200);
+    }
+
+    public function getDataById($id)
+    {
+        $data = TimeSlotsModel::find($id);
+
+        return response()->json([
+            'response' => 200,
+            'data' => $data,
+        ], 200);
+    }
+
+    public function updateData(Request $request)
+    {
+        $request->validate([
+            'id' => 'required|integer',
+            'doct_id' => 'required|integer',
+            'clinic_id' => 'required|integer',
+            'day' => 'required|string',
+            'time_start' => 'required',
+            'time_end' => 'required',
+            'time_duration' => 'required|integer|min:1',
+        ]);
+
+        $slot = TimeSlotsModel::find($request->id);
+
+        if (!$slot) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Time slot not found.',
+            ], 404);
+        }
+
+        $doctorId = (int) $request->doct_id;
+        $clinicId = (int) $request->clinic_id;
+
+        $doctor = DB::table('doctors')
+            ->select('id', 'user_id')
+            ->where('id', $doctorId)
+            ->first();
+
+        if (!$doctor) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Doctor not found.',
+            ], 422);
+        }
+
+        $doctorClinic = DB::table('user_clinics')
+            ->where('user_id', $doctor->user_id)
+            ->where('clinic_id', $clinicId)
+            ->where('is_active', 1)
+            ->exists();
+
+        if (!$doctorClinic) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Doctor does not belong to the selected clinic.',
+            ], 422);
+        }
+
+        $slot->doct_id = $doctorId;
+        $slot->clinic_id = $clinicId;
+        $slot->day = $request->day;
+        $slot->time_start = $request->time_start;
+        $slot->time_end = $request->time_end;
+        $slot->time_duration = (int) $request->time_duration;
+        $slot->save();
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Time slot updated successfully.',
+            'data' => $slot,
+        ], 200);
+    }
+
+    
+    public function getDoctorClinicSlots($doctorId, $clinicId)
+    {
+        $data = TimeSlotsModel::query()
+            ->where('doct_id', (int) $doctorId)
+            ->where('clinic_id', (int) $clinicId)
+            ->orderBy('day')
+            ->orderBy('time_start')
+            ->get();
+
+        return response()->json([
+            'response' => 200,
+            'data' => $data,
+        ], 200);
+    }
+    public function getDoctorClinicTimeInterval($doctorId, $clinicId, $day)
+    {
+        $data = TimeSlotsModel::query()
+            ->where('doct_id', (int) $doctorId)
+            ->where('clinic_id', (int) $clinicId)
+            ->where('day', $day)
+            ->orderBy('time_start', 'ASC')
+            ->get();
+
+        $slots = [];
+
+        foreach ($data as $timeSlot) {
+            $start_time = strtotime($timeSlot->time_start);
+            $end_time = strtotime($timeSlot->time_end);
+            $time_duration = (int) $timeSlot->time_duration;
+
+            if ($time_duration <= 0) {
+                continue;
+            }
+
+            $current_time = $start_time;
+
+            while ($current_time <= $end_time) {
+                $slot_start = date('H:i', $current_time);
+                $current_time += $time_duration * 60;
+                $slot_end = date('H:i', $current_time);
+
+                if ($current_time <= $end_time) {
+                    $slots[] = [
+                        'time_start' => $slot_start,
+                        'time_end' => $slot_end,
+                    ];
+                }
+            }
+        }
+
+        return response()->json([
+            'response' => 200,
+            'data' => $slots,
+        ], 200);
+    }
 }

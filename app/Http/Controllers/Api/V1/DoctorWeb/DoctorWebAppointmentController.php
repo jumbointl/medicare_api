@@ -25,149 +25,123 @@ class DoctorWebAppointmentController extends Controller
     public function index(Request $request)
     {
         try {
-            $user = $request->user();
-
-            if (!$user) {
-                return response()->json([
-                    'status' => false,
-                    'message' => 'Unauthenticated.',
-                ], 401);
-            }
-
-            $perPage = (int) $request->get('per_page', 15);
-            if ($perPage <= 0) {
-                $perPage = 15;
-            }
-
-            $query = DB::table('appointments')
-                ->leftJoin('patients', 'patients.id', '=', 'appointments.patient_id')
-                ->leftJoin('clinics', 'clinics.id', '=', 'appointments.clinic_id')
-                ->leftJoin('department', 'department.id', '=', 'appointments.dept_id')
-                ->select(
-                    'appointments.id',
-                    'appointments.patient_id',
-                    'appointments.status',
-                    'appointments.date',
-                    'appointments.time_slots',
-                    'appointments.duration_minutes',
-                    'appointments.doct_id',
-                    'appointments.clinic_id',
-                    'appointments.dept_id',
-                    'appointments.type',
-                    'appointments.meeting_id',
-                    'appointments.meeting_link',
-                    'appointments.google_calendar_event_id',
-                    'appointments.video_provider',
-                    'appointments.video_channel_name',
-                    'appointments.video_join_open_at',
-                    'appointments.video_join_close_at',
-                    'appointments.video_session_started_at',
-                    'appointments.doctor_joined_at',
-                    'appointments.patient_joined_at',
-                    'appointments.video_session_ended_at',
-                    'appointments.video_last_token_expires_at',
-                    'appointments.id_payment',
-                    'appointments.payment_status',
-                    'appointments.payment_reference',
-                    'appointments.payment_provider',
-                    'appointments.payment_confirmed_at',
-                    'appointments.current_cancel_req_status',
-                    'appointments.source',
-                    'appointments.created_at',
-                    'appointments.updated_at',
-                    'patients.f_name as patient_f_name',
-                    'patients.l_name as patient_l_name',
-                    DB::raw("TRIM(CONCAT(COALESCE(patients.f_name,''), ' ', COALESCE(patients.l_name,''))) as patient_name"),
-                    'clinics.title as clinic_name',
-                    'department.title as department_name'
-                )
-                ->where('appointments.doct_id', $user->id);
-
-            if ($request->filled('status')) {
-                $query->where('appointments.status', $request->status);
-            }
-
-            if ($request->filled('date')) {
-                $query->whereDate('appointments.date', $request->date);
-            }
-
-            $data = $query
-                ->orderByDesc('appointments.date')
-                ->orderByDesc('appointments.time_slots')
-                ->paginate($perPage);
-
-            return response()->json([
-                'status' => true,
-                'data' => $data,
-            ], 200);
-        } catch (\Throwable $e) {
-            Log::error('DoctorWebAppointmentController@index failed', [
-                'user_id' => $request->user()?->id,
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-            ]);
-
+            $doctorId = $this->currentDoctorId($request);
+        } catch (\RuntimeException $e) {
             return response()->json([
                 'status' => false,
-                'message' => 'Could not load appointments.',
-                'error' => $e->getMessage(),
-            ], 500);
+                'message' => $e->getMessage(),
+            ], 404);
         }
+
+        $perPage = (int) $request->get('per_page', 10);
+        $search = trim((string) $request->get('search', ''));
+        $status = trim((string) $request->get('status', ''));
+        $type = trim((string) $request->get('type', ''));
+        $start = trim((string) $request->get('start', ''));
+        $end = trim((string) $request->get('end', ''));
+        $clinicId = trim((string) $request->get('clinic_id', ''));
+
+        $query = \App\Models\AppointmentModel::query()
+            ->select([
+                'appointments.id',
+                'appointments.patient_id',
+                'appointments.doct_id',
+                'appointments.clinic_id',
+                'appointments.type',
+                'appointments.status',
+                'appointments.payment_status',
+                'appointments.video_provider',
+                'appointments.date',
+                'appointments.time_slots',
+                'appointments.created_at',
+                \DB::raw("CONCAT(COALESCE(patients.f_name, ''), ' ', COALESCE(patients.l_name, '')) as patient_name"),
+                'clinics.title as clinic_name',
+            ])
+            ->leftJoin('patients', 'patients.id', '=', 'appointments.patient_id')
+            ->leftJoin('clinics', 'clinics.id', '=', 'appointments.clinic_id')
+            ->where('appointments.doct_id', $doctorId)
+            ->orderByDesc('appointments.date')
+            ->orderByDesc('appointments.time_slots');
+
+        if ($clinicId !== '' && $clinicId !== 'all') {
+            $query->where('appointments.clinic_id', $clinicId);
+        }
+
+        if ($search !== '') {
+            $query->where(function ($q) use ($search) {
+                $q->where('appointments.id', 'like', "%{$search}%")
+                    ->orWhere(\DB::raw("CONCAT(COALESCE(patients.f_name, ''), ' ', COALESCE(patients.l_name, ''))"), 'like', "%{$search}%")
+                    ->orWhere('patients.f_name', 'like', "%{$search}%")
+                    ->orWhere('patients.l_name', 'like', "%{$search}%")
+                    ->orWhere('appointments.type', 'like', "%{$search}%")
+                    ->orWhere('appointments.status', 'like', "%{$search}%");
+            });
+        }
+
+        if ($status !== '' && strtoupper($status) !== 'ALL') {
+            $query->where('appointments.status', $status);
+        }
+
+        if ($type !== '' && strtoupper($type) !== 'ALL') {
+            $query->where('appointments.type', $type);
+        }
+
+        if ($start !== '' && $end !== '') {
+            $query->whereBetween('appointments.date', [$start, $end]);
+        } elseif ($start !== '') {
+            $query->whereDate('appointments.date', '>=', $start);
+        } elseif ($end !== '') {
+            $query->whereDate('appointments.date', '<=', $end);
+        }
+
+        return response()->json([
+            'status' => true,
+            'data' => $query->paginate($perPage),
+        ], 200);
     }
 
     public function show(Request $request, $id)
     {
         try {
-            $user = $request->user();
-            $appointmentId = (int) $id;
-
-            $appointment = DB::table('appointments')
-                ->leftJoin('patients', 'patients.id', '=', 'appointments.patient_id')
-                ->leftJoin('clinics', 'clinics.id', '=', 'appointments.clinic_id')
-                ->leftJoin('department', 'department.id', '=', 'appointments.dept_id')
-                ->select(
-                    'appointments.*',
-                    'patients.f_name as patient_f_name',
-                    'patients.l_name as patient_l_name',
-                    'patients.phone as patient_phone',
-                    'patients.email as patient_email',
-                    DB::raw("TRIM(CONCAT(COALESCE(patients.f_name,''), ' ', COALESCE(patients.l_name,''))) as patient_name"),
-                    'clinics.id as clinic_ref_id',
-                    'clinics.title as clinic_name',
-                    'department.id as department_ref_id',
-                    'department.title as department_name'
-                )
-                ->where('appointments.id', $appointmentId)
-                ->where('appointments.doct_id', $user->id)
-                ->first();
-
-            if (!$appointment) {
-                return response()->json([
-                    'status' => false,
-                    'message' => 'Appointment not found or access denied.',
-                ], 404);
-            }
-
-            return response()->json([
-                'status' => true,
-                'data' => $appointment,
-            ], 200);
-        } catch (\Throwable $e) {
-            Log::error('DoctorWebAppointmentController@show failed', [
-                'appointment_id' => (int) $id,
-                'user_id' => $request->user()?->id,
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-            ]);
-
+            $doctorId = $this->currentDoctorId($request);
+        } catch (\RuntimeException $e) {
             return response()->json([
                 'status' => false,
-                'message' => 'Could not load appointment details.',
-                'error' => $e->getMessage(),
-            ], 500);
+                'message' => $e->getMessage(),
+            ], 404);
         }
+
+        $appointment = \App\Models\AppointmentModel::query()
+            ->select([
+                'appointments.*',
+                \DB::raw("CONCAT(COALESCE(patients.f_name, ''), ' ', COALESCE(patients.l_name, '')) as patient_name"),
+                'patients.phone as patient_phone',
+                'patients.email as patient_email',
+                'clinics.title as clinic_name',
+                'clinics.address as clinic_address',
+                'vd.doctor_name',
+                'vd.specialization as doctor_specialization',
+                'vd.email as doctor_email',
+                'vd.image as doctor_image',
+            ])
+            ->leftJoin('patients', 'patients.id', '=', 'appointments.patient_id')
+            ->leftJoin('clinics', 'clinics.id', '=', 'appointments.clinic_id')
+            ->leftJoin('v_doctors as vd', 'vd.doctor_id', '=', 'appointments.doct_id')
+            ->where('appointments.id', $id)
+            ->where('appointments.doct_id', $doctorId)
+            ->first();
+
+        if (!$appointment) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Appointment not found.',
+            ], 404);
+        }
+
+        return response()->json([
+            'status' => true,
+            'data' => $appointment,
+        ], 200);
     }
 
     public function confirm(Request $request, $id)
@@ -396,7 +370,13 @@ class DoctorWebAppointmentController extends Controller
 
     private function createGoogleMeetForAppointment(AppointmentModel $appointment): array
     {
-        $doctorUser = User::find($appointment->doct_id);
+        $doctor = \App\Models\DoctorsModel::query()->find($appointment->doct_id);
+
+        if (!$doctor) {
+            throw new \RuntimeException('Doctor profile not found.');
+        }
+
+        $doctorUser = User::find($doctor->user_id);
 
         if (!$doctorUser) {
             throw new \RuntimeException('Doctor user not found.');
@@ -535,4 +515,14 @@ class DoctorWebAppointmentController extends Controller
 
         return $data;
     }
+    private function currentDoctorId(Request $request): int
+{
+    $vUser = \App\Models\VUser::query()->where('id', $request->user()->id)->first();
+
+    if (!$vUser || empty($vUser->doctor_id)) {
+        throw new \RuntimeException('Doctor profile not found.');
+    }
+
+    return (int) $vUser->doctor_id;
+}
 }

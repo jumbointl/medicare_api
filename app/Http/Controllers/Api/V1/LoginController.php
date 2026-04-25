@@ -3,19 +3,336 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Validator;
-use Illuminate\Support\Facades\Hash;
 use App\Models\User;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
+use App\Models\VUser;
+use App\Services\UserNormalizerService;
 use Google\Client as GoogleClient;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 
 class LoginController extends Controller
 {
+    public function __construct(
+        private UserNormalizerService $userNormalizerService
+    ) {
+    }
+
+    private function findVUserById(int $userId): ?VUser
+    {
+        return VUser::query()
+            ->where('id', $userId)
+            ->first();
+    }
+
+    private function findVUserByEmail(string $email): ?VUser
+    {
+        return VUser::query()
+            ->whereRaw('LOWER(email) = ?', [strtolower(trim($email))])
+            ->where('is_deleted', 0)
+            ->first();
+    }
+
     private function getAllowedGoogleClientIds(): array
     {
         return config('services.google.allowed_client_ids', []);
+    }
+
+    private function getUserRoles(int $userId): array
+    {
+        return DB::table('users_role_assign')
+            ->join('roles', 'roles.id', '=', 'users_role_assign.role_id')
+            ->where('users_role_assign.user_id', $userId)
+            ->pluck('roles.name')
+            ->toArray();
+    }
+
+    private function buildFallbackNormalizedUser(User $user): array
+    {
+        $linked = !empty($user->google_id);
+
+        return [
+            'id' => $user->id,
+            'clinic_id' => $user->clinic_id ?? null,
+            'pathologist_id' => $user->pathologist_id ?? null,
+            'wallet_amount' => $user->wallet_amount ?? null,
+
+            'f_name' => $user->f_name ?? null,
+            'l_name' => $user->l_name ?? null,
+            'phone' => $user->phone ?? null,
+            'isd_code' => $user->isd_code ?? null,
+            'gender' => $user->gender ?? null,
+            'dob' => $user->dob ?? null,
+            'email' => $user->email ?? null,
+
+            'auth_provider' => $user->auth_provider ?? null,
+            'avatar_url' => $user->avatar_url ?? null,
+            'image' => $user->image ?? null,
+
+            'address' => $user->address ?? null,
+            'city' => $user->city ?? null,
+            'state' => $user->state ?? null,
+            'postal_code' => $user->postal_code ?? null,
+
+            'isd_code_sec' => $user->isd_code_sec ?? null,
+            'phone_sec' => $user->phone_sec ?? null,
+
+            'email_verified_at' => $user->email_verified_at ?? null,
+            'fcm' => $user->fcm ?? null,
+            'web_fcm' => $user->web_fcm ?? null,
+            'notification_seen_at' => $user->notification_seen_at ?? null,
+
+            'created_at' => $user->created_at ?? null,
+            'updated_at' => $user->updated_at ?? null,
+            'is_deleted' => $user->is_deleted ?? null,
+            'deleted_at' => $user->deleted_at ?? null,
+
+            'doctor_id' => null,
+            'doctor' => [],
+            'roles' => [],
+            'permissions' => [],
+            'role' => (object) [
+                'primary' => null,
+                'all' => [],
+            ],
+
+            'clinic_title' => null,
+            'owner_clinic' => null,
+            'doctor_clinics' => [],
+            'clinics' => [],
+
+            'google_calendar' => [
+                'linked' => $linked,
+                'connected' => $linked,
+                'status' => $linked ? 'valid' : 'not_linked',
+                'label' => $linked ? 'Connected' : 'Not linked',
+                'color' => $linked ? 'green' : 'gray',
+                'action' => $linked ? 'connected' : 'connect',
+                'expires_at' => null,
+                'expires_in_days' => null,
+            ],
+        ];
+    }
+
+    public function login(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'email' => 'required|email',
+            'password' => 'required',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'response' => 422,
+                'status' => false,
+                'message' => $validator->errors()->first(),
+            ], 422);
+        }
+
+        $vUser = $this->findVUserByEmail($request->email);
+
+        if (!$vUser || !Hash::check($request->password, (string) $vUser->password)) {
+            return response()->json([
+                'response' => 401,
+                'status' => false,
+                'message' => 'Invalid credentials',
+            ], 401);
+        }
+
+        $user = User::find($vUser->id);
+
+        if (!$user) {
+            
+            return response()->json([
+                'response' => 404,
+                'status' => false,
+                'message' => 'User not found.',
+            ], 404);
+        }
+
+        $token = $user->createToken('auth_token')->plainTextToken;
+
+        return response()->json([
+             'response' => 200,
+            'status' => true,
+            'message' => 'Login successful',
+            'token' => $token,
+            'data' => $this->userNormalizerService->normalizeUser($vUser),
+        ], 200);
+    }
+
+    public function loginGoogleDoctor(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'email' => 'required|email',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'response' => 422,
+                'status' => false,
+                'message' => $validator->errors()->first(),
+            ], 422);
+        }
+
+        $vUser = $this->findVUserByEmail($request->email);
+
+        if (!$vUser) {
+            return response()->json([
+                 'response' => 404,
+                'status' => false,
+                'message' => 'User not found',
+            ], 404);
+        }
+
+        $user = User::find($vUser->id);
+
+        if (!$user) {
+            return response()->json([
+                'response' => 404,
+                'status' => false,
+                'message' => 'User not found.',
+            ], 404);
+        }
+
+        $token = $user->createToken('auth_token')->plainTextToken;
+
+        return response()->json([
+            'response' => 200,
+            'status' => true,
+            'message' => 'Login successful',
+            'token' => $token,
+            'data' => $this->userNormalizerService->normalizeUser($vUser),
+        ], 200);
+    }
+    public function loginMobile(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'phone' => 'required|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'response' => 200,
+                'status' => false,
+                'message' => $validator->errors()->first(),
+                'data' => null,
+            ], 422);
+        }
+
+        $phone = trim((string) $request->phone);
+
+        $user = User::query()
+            ->where('phone', $phone)
+            ->where('is_deleted', false)
+            ->first();
+
+        if (!$user) {
+            return response()->json([
+                'response' => 200,
+                'status' => false,
+                'message' => 'Not Exists',
+                'data' => null,
+            ], 200);
+        }
+
+        $token = $user->createToken('auth_token')->plainTextToken;
+
+        $vUser = $this->findVUserById($user->id);
+
+        return response()->json([
+            'response' => 200,
+            'status' => true,
+            'message' => 'Successfully',
+            'token' => $token,
+            'data' => $vUser
+                ? $this->userNormalizerService->normalizeUser($vUser)
+                : $this->buildFallbackNormalizedUser($user),
+        ], 200);
+    }
+    public function reLoginMobile(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'phone' => 'required|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'response' => 422,
+                'status' => false,
+                'message' => $validator->errors()->first(),
+                'data' => null,
+            ], 422);
+        }
+
+        $phone = trim((string) $request->phone);
+
+        $user = User::query()
+            ->where('phone', $phone)
+            ->where('is_deleted', false)
+            ->first();
+
+        if (!$user) {
+            return response()->json([
+                'response' => 401,
+                'status' => false,
+                'message' => 'User does not exist',
+                'data' => null,
+            ], 401);
+        }
+
+        $vUser = $this->findVUserById($user->id);
+
+        return response()->json([
+            'response' => 200,
+            'status' => true,
+            'message' => 'Re Log with Mobile success',
+            'data' => $vUser
+                ? $this->userNormalizerService->normalizeUser($vUser)
+                : $this->buildFallbackNormalizedUser($user),
+        ], 200);
+    }
+    public function impersonateUser(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'user_id' => 'required|integer',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => false,
+                'message' => $validator->errors()->first(),
+            ], 422);
+        }
+
+        $vUser = $this->findVUserById((int) $request->user_id);
+
+        if (!$vUser) {
+            return response()->json([
+                'status' => false,
+                'message' => 'User not found',
+            ], 404);
+        }
+
+        $user = User::find($vUser->id);
+
+        if (!$user) {
+            return response()->json([
+                'status' => false,
+                'message' => 'User not found.',
+            ], 404);
+        }
+
+        $token = $user->createToken('auth_token')->plainTextToken;
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Impersonation successful',
+            'token' => $token,
+            'data' => $this->userNormalizerService->normalizeUser($vUser),
+        ], 200);
     }
 
     public function loginGoogle(Request $request)
@@ -31,10 +348,10 @@ class LoginController extends Controller
             ]);
 
             return response([
-                "response" => 400,
-                "status" => false,
-                "message" => "Invalid request",
-                "errors" => $validator->errors(),
+                'response' => 400,
+                'status' => false,
+                'message' => 'Invalid request',
+                'errors' => $validator->errors(),
             ], 400);
         }
 
@@ -54,10 +371,10 @@ class LoginController extends Controller
                 \Log::warning('loginGoogle invalid token');
 
                 return response([
-                    "response" => 200,
-                    "status" => false,
-                    "message" => "Invalid Google token",
-                ], 200);
+                    'response' => 401,
+                    'status' => false,
+                    'message' => 'Invalid Google token',
+                ], 401);
             }
 
             $allowedAudiences = $this->getAllowedGoogleClientIds();
@@ -78,13 +395,15 @@ class LoginController extends Controller
                     'allowed' => $allowedAudiences,
                 ]);
 
+                DB::rollBack();
+
                 return response([
-                    "response" => 200,
-                    "status" => false,
-                    "message" => "Token audience is not allowed",
-                    "aud" => $aud,
-                    "allowed" => $allowedAudiences,
-                ], 200);
+                    'response' => 401,
+                    'status' => false,
+                    'message' => 'Token audience is not allowed',
+                    'aud' => $aud,
+                    'allowed' => $allowedAudiences,
+                ], 402);
             }
 
             if (!$email || !$emailVerified) {
@@ -93,11 +412,13 @@ class LoginController extends Controller
                     'email_verified' => $emailVerified,
                 ]);
 
+                DB::rollBack();
+
                 return response([
-                    "response" => 200,
-                    "status" => false,
-                    "message" => "Google email is not verified",
-                ], 200);
+                    'response' => 401,
+                    'status' => false,
+                    'message' => 'Google email is not verified',
+                ], 401);
             }
 
             if ($requestedEmail !== $email) {
@@ -106,11 +427,13 @@ class LoginController extends Controller
                     'token_email' => $email,
                 ]);
 
+                DB::rollBack();
+
                 return response([
-                    "response" => 200,
-                    "status" => false,
-                    "message" => "Google email does not match token email",
-                ], 200);
+                    'response' => 401,
+                    'status' => false,
+                    'message' => 'Google email does not match token email',
+                ], 401);
             }
 
             $matchedUsers = User::whereRaw('LOWER(email) = ?', [$email])
@@ -127,10 +450,10 @@ class LoginController extends Controller
                 DB::rollBack();
 
                 return response([
-                    "response" => 200,
-                    "status" => false,
-                    "message" => "Multiple accounts found for this email. Please contact support.",
-                ], 200);
+                    'response' => 401,
+                    'status' => false,
+                    'message' => 'Multiple accounts found for this email. Please contact support.',
+                ], 401);
             }
 
             if ($matchedUsers->count() === 1) {
@@ -140,10 +463,10 @@ class LoginController extends Controller
                     DB::rollBack();
 
                     return response([
-                        "response" => 200,
-                        "status" => false,
-                        "message" => "This account is linked to another Google account.",
-                    ], 200);
+                        'response' => 401,
+                        'status' => false,
+                        'message' => 'This account is linked to another Google account.',
+                    ], 401);
                 }
             } else {
                 $user = new User();
@@ -165,534 +488,63 @@ class LoginController extends Controller
                 $user->email = $email;
             }
 
-            if (!empty($givenName)) {
-                $user->f_name = $givenName;
-            } elseif (!empty($name) && empty($user->f_name)) {
-                $user->f_name = $name;
+            if (empty($user->f_name)) {
+                $user->f_name = $givenName ?: ($name ?: 'Google');
             }
 
-            if (!empty($familyName)) {
-                $user->l_name = $familyName;
+            if (empty($user->l_name)) {
+                $user->l_name = $familyName ?: 'User';
             }
 
-            if (!empty($picture)) {
-                $user->image = $picture;
-                if (\Schema::hasColumn('users', 'avatar_url')) {
-                    $user->avatar_url = $picture;
-                }
+            if (\Schema::hasColumn('users', 'avatar_url') && !empty($picture)) {
+                $user->avatar_url = $picture;
+            }
+
+            if (\Schema::hasColumn('users', 'email_verified_at') && empty($user->email_verified_at)) {
+                $user->email_verified_at = now();
             }
 
             $user->save();
 
-            $token = $user->createToken('my-app-token')->plainTextToken;
+            $roles = $this->getUserRoles($user->id);
+
+            \Log::info('loginGoogle roles loaded', [
+                'user_id' => $user->id,
+                'roles' => $roles,
+            ]);
+
+            $token = $user->createToken('auth_token')->plainTextToken;
 
             DB::commit();
 
+            $vUser = $this->findVUserById($user->id);
+
+            $data = $vUser
+                ? $this->userNormalizerService->normalizeUser($vUser)
+                : $this->buildFallbackNormalizedUser($user);
+
             return response([
-                "response" => 200,
-                "status" => true,
-                "message" => "Successfully",
-                "data" => $user,
-                "token" => $token,
+                'response' => 200,
+                'status' => true,
+                'message' => 'Successfully',
+                'token' => $token,
+                'data' => $data,
             ], 200);
         } catch (\Throwable $e) {
             DB::rollBack();
 
-            \Log::error('loginGoogle exception', [
+            \Log::error('loginGoogle error', [
                 'message' => $e->getMessage(),
                 'line' => $e->getLine(),
                 'file' => $e->getFile(),
             ]);
 
             return response([
-                "response" => 500,
-                "status" => false,
-                "message" => "Login with Google failed",
-                "error" => $e->getMessage(),
-            ], 200);
+                'response' => 500,
+                'status' => false,
+                'message' => 'Something went wrong Login Google',
+                'error' => app()->environment('production') ? null : $e->getMessage(),
+            ], 500);
         }
-    }
-    public function loginGoogleDoctor(Request $request)
-    {
-        $validator = Validator::make($request->all(), [
-            'id_token' => 'required|string',
-            'email' => 'required|email',
-        ]);
-
-        if ($validator->fails()) {
-            \Log::warning('loginGoogleDoctor validation failed', [
-                'errors' => $validator->errors()->toArray(),
-            ]);
-
-            return response([
-                "response" => 400,
-                "status" => false,
-                "message" => "Invalid request",
-                "errors" => $validator->errors(),
-            ], 400);
-        }
-
-        try {
-            \Log::info('loginGoogleDoctor start', [
-                'has_id_token' => $request->filled('id_token'),
-                'has_email' => $request->filled('email'),
-                'request_keys' => array_keys($request->all()),
-            ]);
-
-            DB::beginTransaction();
-
-            $client = new GoogleClient();
-            $payload = $client->verifyIdToken($request->id_token);
-
-            if (!$payload) {
-                \Log::warning('loginGoogleDoctor invalid token');
-
-                return response([
-                    "response" => 200,
-                    "status" => false,
-                    "message" => "Invalid Google token",
-                ], 200);
-            }
-
-            $allowedAudiences = $this->getAllowedGoogleClientIds();
-
-            $aud = $payload['aud'] ?? null;
-            $sub = $payload['sub'] ?? null;
-            $email = isset($payload['email']) ? strtolower(trim($payload['email'])) : null;
-            $requestedEmail = strtolower(trim($request->email));
-            $emailVerified = filter_var($payload['email_verified'] ?? false, FILTER_VALIDATE_BOOLEAN);
-            $givenName = $payload['given_name'] ?? null;
-            $familyName = $payload['family_name'] ?? null;
-            $name = $payload['name'] ?? null;
-            $picture = $payload['picture'] ?? null;
-
-            if (!$sub || !$aud || !in_array($aud, $allowedAudiences, true)) {
-                \Log::warning('loginGoogleDoctor audience rejected', [
-                    'aud' => $aud,
-                    'allowed' => $allowedAudiences,
-                ]);
-
-                return response([
-                    "response" => 200,
-                    "status" => false,
-                    "message" => "Token audience is not allowed",
-                    "aud" => $aud,
-                    "allowed" => $allowedAudiences,
-                ], 200);
-            }
-
-            if (!$email || !$emailVerified) {
-                \Log::warning('loginGoogleDoctor email not verified', [
-                    'email' => $email,
-                    'email_verified' => $emailVerified,
-                ]);
-
-                return response([
-                    "response" => 200,
-                    "status" => false,
-                    "message" => "Google email is not verified",
-                ], 200);
-            }
-
-            if ($requestedEmail !== $email) {
-                \Log::warning('loginGoogleDoctor email mismatch', [
-                    'request_email' => $requestedEmail,
-                    'token_email' => $email,
-                ]);
-
-                return response([
-                    "response" => 200,
-                    "status" => false,
-                    "message" => "Google email does not match token email",
-                ], 200);
-            }
-
-            $matchedUsers = User::whereRaw('LOWER(email) = ?', [$email])
-                ->where('is_deleted', false)
-                ->get();
-
-            \Log::info('loginGoogleDoctor users by email', [
-                'email' => $email,
-                'matched_count' => $matchedUsers->count(),
-                'matched_ids' => $matchedUsers->pluck('id')->toArray(),
-            ]);
-
-            if ($matchedUsers->count() > 1) {
-                DB::rollBack();
-
-                return response([
-                    "response" => 200,
-                    "status" => false,
-                    "message" => "Multiple accounts found for this email. Please contact support.",
-                ], 200);
-            }
-
-            if ($matchedUsers->count() === 0) {
-                DB::rollBack();
-
-                return response([
-                    "response" => 200,
-                    "status" => false,
-                    "message" => "This email is not registered as doctor.",
-                ], 200);
-            }
-
-            $user = $matchedUsers->first();
-
-            $roles = DB::table("users_role_assign")
-                ->select('users_role_assign.*', 'roles.name as name')
-                ->join('roles', 'roles.id', '=', 'users_role_assign.role_id')
-                ->where('users_role_assign.user_id', '=', $user->id)
-                ->get();
-
-            $hasDoctorRole = $roles->contains(function ($role) {
-                return strtolower(trim($role->name ?? '')) === 'doctor';
-            });
-
-            if (!$hasDoctorRole) {
-                DB::rollBack();
-
-                return response([
-                    "response" => 200,
-                    "status" => false,
-                    "message" => "This account is not a doctor account.",
-                ], 200);
-            }
-
-            if (!empty($user->google_id) && $user->google_id !== $sub) {
-                DB::rollBack();
-
-                return response([
-                    "response" => 200,
-                    "status" => false,
-                    "message" => "This doctor account is linked to another Google account.",
-                ], 200);
-            }
-
-            $user->google_id = $sub;
-            $user->auth_provider = 'google';
-
-            if (!empty($givenName)) {
-                $user->f_name = $givenName;
-            } elseif (!empty($name) && empty($user->f_name)) {
-                $user->f_name = $name;
-            }
-
-            if (!empty($familyName)) {
-                $user->l_name = $familyName;
-            }
-
-            if (!empty($picture)) {
-                $user->image = $picture;
-                if (\Schema::hasColumn('users', 'avatar_url')) {
-                    $user->avatar_url = $picture;
-                }
-            }
-
-            if (empty($user->email)) {
-                $user->email = $email;
-            }
-
-            $user->save();
-
-            $token = $user->createToken('my-app-token')->plainTextToken;
-
-            $user->role = $roles;
-
-            $clinic = DB::table("clinics")
-                ->select('clinics.id', 'clinics.title')
-                ->where('clinics.user_id', '=', $user->id)
-                ->first();
-
-            if ($clinic) {
-                $user->clinic_id = $clinic->id;
-                $user->clinic_title = $clinic->title;
-            }
-
-            $doctor = DB::table("doctors")
-                ->select('doctors.clinic_id')
-                ->where('doctors.user_id', '=', $user->id)
-                ->first();
-
-            if ($doctor) {
-                $user->assign_clinic_id = $doctor->clinic_id;
-            }
-
-            DB::commit();
-
-            return response([
-                "response" => 200,
-                "status" => true,
-                "message" => "Successfully",
-                "data" => $user,
-                "token" => $token,
-            ], 200);
-        } catch (\Throwable $e) {
-            DB::rollBack();
-
-            \Log::error('loginGoogleDoctor exception', [
-                'message' => $e->getMessage(),
-                'line' => $e->getLine(),
-                'file' => $e->getFile(),
-            ]);
-
-            return response([
-                "response" => 500,
-                "status" => false,
-                "message" => "Login with Google failed",
-                "error" => $e->getMessage(),
-            ], 200);
-        }
-    }
-    function checkUserRegMobile(Request $request)
-    {
-        $validator = Validator::make(request()->all(), [
-            'phone' => 'required'
-        ]);
-
-        if ($validator->fails())
-            return response(["response" => 400], 400);
-
-        $user = User::where('phone', $request->phone)->first();
-
-        if (!$user) {
-            return response([
-                "response" => 201,
-                "status" => false,
-                'message' => 'These credentials do not match our records.'
-            ], 200);
-        } else {
-            return response([
-                "response" => 201,
-                "status" => true,
-                'message' => 'User exists'
-            ], 200);
-        }
-    }
-    function loginMobile(Request $request)
-    {
-        $validator = Validator::make(request()->all(), [
-            'phone' => 'required'
-        ]);
-
-        if ($validator->fails())
-            return response(["response" => 400], 400);
-
-        $user = User::where('phone', $request->phone)->where('is_deleted', '=', false)->first();
-
-        if (!$user) {
-            return response([
-                "response" => 200,
-                "status" => false,
-                'message' => "Not Exists",
-                'data' => null,
-
-            ], 200);
-        }
-        // $user->tokens()->delete();
-        $token = $user->createToken('my-app-token')->plainTextToken;
-
-
-        $response = [
-            "response" => 200,
-            "status" => true,
-            'message' => "Successfully",
-            'data' => $user,
-            'token' => $token,
-        ];
-
-        return response($response, 200);
-    }
-    function ReLoginMobile(Request $request)
-    {
-        $validator = Validator::make($request->all(), [
-            'phone' => 'required',
-        ]);
-
-        if ($validator->fails()) {
-            return response(["response" => 400], 400);
-        }
-
-        $user = User::where('phone', $request->phone)->where('is_deleted', '=', false)->first();
-
-        if (!$user) {
-            return response([
-                "response" => 200,
-                "status" => false,
-                'message' => "User does not exist",
-                'data' => null,
-            ], 200);
-        }
-
-        return response([
-            "response" => 200,
-            "status" => true,
-            'message' => "Successfully retrieved user data",
-            'data' => $user,
-        ], 200);
-    }
-
-
-
-    function login(Request $request)
-    {
-        $user = User::where('email', $request->email)->first();
-
-        if (!$user || !Hash::check($request->password, $user->password)) {
-            return response([
-                "response" => 201,
-                "status" => false,
-                'message' => 'These credentials do not match our records.'
-            ], 200);
-        }
-        // $user->tokens()->delete();
-        $token = $user->createToken('my-app-token')->plainTextToken;
-
-
-        $user->role = DB::table("users_role_assign")
-            ->select(
-                'users_role_assign.*',
-                'roles.name as name',
-            )
-            ->Join('roles', 'roles.id', '=', 'users_role_assign.role_id')
-            ->where('users_role_assign.user_id', '=', $user->id)
-            ->get();
-
-
-        $clinic = DB::table("clinics")
-            ->select(
-                'clinics.id',
-                'clinics.title'
-            )
-            ->where('clinics.user_id', '=', $user->id)
-            ->first();
-
-        if ($clinic) {
-
-            $user->clinic_id =   $clinic->id;
-            $user->clinic_title =   $clinic->title;
-        }
-
-
-        $doctors = DB::table("doctors")
-            ->select(
-                'doctors.clinic_id',
-            )
-            ->where('doctors.user_id', '=', $user->id)
-            ->first();
-        if ($doctors) {
-
-            $user->assign_clinic_id =   $doctors->clinic_id;
-        }
-
-        $response = [
-            "response" => 200,
-            "status" => true,
-            'message' => "Successfully",
-            'data' => $user,
-            //  'roles'=> $roles, 
-            'token' => $token,
-        ];
-
-        return response($response, 200);
-    }
-
-
-    public function logout(Request $request)
-    {
-        $user = $request->user();
-
-        if (!$user) {
-            return response([
-                "response" => 401,
-                "status" => false,
-                "message" => "Unauthenticated."
-            ], 401);
-        }
-
-        $user->update([
-            'fcm' => null,
-            'web_fcm' => null,
-        ]);
-
-        if ($user->currentAccessToken()) {
-            $user->currentAccessToken()->delete();
-        }
-
-        return response([
-            "response" => 200,
-            "status" => true,
-            "message" => "Logged out successfully."
-        ], 200);
-    }
-
-    // imporsnate user
-    public function impersonateUser(Request $request)
-    {
-        $validator = Validator::make($request->all(), [
-            'user_id' => 'required',    // user to impersonate
-        ]);
-
-        if ($validator->fails()) {
-            return response(["response" => 400, "message" => "Invalid request"], 400);
-        }
-
-        /** AUTH USER FROM BEARER TOKEN */
-        $admin = $request->user();  // no need to send admin_id
-        $targetUser = User::where('id', $request->user_id)->where('is_deleted', false)->first();
-
-        if (!$admin || !$targetUser) {
-            return response([
-                "response" => 404,
-                "status" => false,
-                "message" => "User not found"
-            ], 200);
-        }
-
-        /** CHECK IF ADMIN IS SUPER ADMIN */
-        $isSuperAdmin = DB::table("users_role_assign")
-            ->join('roles', 'roles.id', '=', 'users_role_assign.role_id')
-            ->where('users_role_assign.user_id', $admin->id)
-            ->where('roles.name', 'Super Admin')
-            ->exists();
-
-        if (!$isSuperAdmin) {
-            return response([
-                "response" => 403,
-                "status" => false,
-                "message" => "Only Super Admin can impersonate users"
-            ], 200);
-        }
-
-        /** CREATE TOKEN FOR IMPERSONATED USER */
-        $token = $targetUser->createToken('impersonate-token')->plainTextToken;
-
-        // Attach role info
-        $targetUser->role = DB::table("users_role_assign")
-            ->select('users_role_assign.*', 'roles.name as name')
-            ->join('roles', 'roles.id', '=', 'users_role_assign.role_id')
-            ->where('users_role_assign.user_id', $targetUser->id)
-            ->first();
-
-
-        // Clinic details if exist
-        if ($clinic = DB::table("clinics")->select('id', 'title')->where('user_id', $targetUser->id)->first()) {
-            $targetUser->clinic_id = $clinic->id;
-            $targetUser->clinic_title = $clinic->title;
-        }
-
-        // Assigned doctor clinic
-        if ($doctor = DB::table("doctors")->select('clinic_id')->where('user_id', $targetUser->id)->first()) {
-            $targetUser->assign_clinic_id = $doctor->clinic_id;
-        }
-
-        return response([
-            "response" => 200,
-            "status" => true,
-            "message" => "Impersonation Successful",
-            "impersonating_as" => $targetUser->name,
-            "data" => $targetUser,
-            "token" => $token,
-        ], 200);
     }
 }

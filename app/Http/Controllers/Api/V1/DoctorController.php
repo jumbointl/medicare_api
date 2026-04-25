@@ -355,198 +355,109 @@ class DoctorController extends Controller
         }
     }
 
-
     public function getData(Request $request)
     {
-        // Define the base query
-        $query = DB::table("doctors")
-            ->select(
-                'doctors.*',
-                "users.f_name",
-                "users.l_name",
-                "users.phone",
-                "users.isd_code",
-                "users.gender",
-                "users.dob",
-                "users.email",
-                "users.image",
-                "department.title as department_name",
-                'clinics.title as clinic_title',
-                'cities.title as city_title',
-                'states.title as state_title',
-                "clinics.address as clinics_address",
-            )
-            ->join('users', 'users.id', '=', 'doctors.user_id')
-            ->join('department', 'department.id', '=', 'doctors.department')
-            ->join('clinics', 'clinics.id', '=', 'doctors.clinic_id')
-            ->join('cities', 'cities.id', '=', 'clinics.city_id')
-            ->join('states', 'states.id', '=', 'cities.state_id')
-            ->orderBy("doctors.created_at", "DESC");
+        $query = DB::table('v_doctors')->select('*');
 
-        // Apply filters (like search)
-        if ($request->has('search')) {
-            $search = $request->input('search');
+        if ($request->filled('doctor_id')) {
+            $query->where('doctor_id', (int) $request->doctor_id);
+        }
+
+        if ($request->filled('clinic_id')) {
+            $query->where('clinic_id', (int) $request->clinic_id);
+        }
+
+        if ($request->filled('active')) {
+            $query->where('active', (int) $request->active);
+        }
+
+        if ($request->filled('stop_booking')) {
+            $query->where('stop_booking', (int) $request->stop_booking);
+        }
+
+        if ($request->filled('search')) {
+            $search = trim((string) $request->search);
+
             $query->where(function ($q) use ($search) {
-                $q->where('doctors.specialization', 'like', '%' . $search . '%')
-                    ->orWhere(DB::raw('CONCAT(users.f_name, " ", users.l_name)'), 'like', '%' . $search . '%')
-                    ->orWhere('users.l_name', 'LIKE', "%$search%")
-                    ->orWhere('clinics.title', 'LIKE', "%$search%")
-                    ->orWhere('clinics.address', 'LIKE', "%$search%")
-                    ->orWhereRaw("CONCAT(f_name, ' ', l_name) LIKE ?", ["%$search%"]);
+                $q->where('doctor_name', 'like', "%{$search}%")
+                ->orWhere('f_name', 'like', "%{$search}%")
+                ->orWhere('l_name', 'like', "%{$search}%")
+                ->orWhere('email', 'like', "%{$search}%")
+                ->orWhere('phone', 'like', "%{$search}%")
+                ->orWhere('specialization', 'like', "%{$search}%")
+                ->orWhere('department_title', 'like', "%{$search}%")
+                ->orWhere('clinic_title', 'like', "%{$search}%");
             });
         }
-        if ($request->filled('active')) {
-            $query->where('doctors.active', $request->active);
-            $query->where('clinics.active', $request->active);
-            $query->where('cities.active', $request->active);
-            
-        }
-        if ($request->filled('department')) {
-            $query->where('doctors.department', $request->department);
-        }
-        if ($request->filled('clinic_id')) {
-            $query->where('doctors.clinic_id', $request->clinic_id);
-        }
 
-        if ($request->filled('city_id')) {
-            $query->where('cities.id', $request->city_id);
-        }
+        $data = $query
+            ->orderBy('doctor_name')
+            ->get();
 
-
-        // Calculate total records first (without pagination)
-        $total_record = $query->count(); // Count the total records before pagination
-
-        // Apply pagination if start and end are provided
-        if ($request->filled(['start', 'end'])) {
-            $start = $request->start;
-            $end = $request->end;
-            $query->skip($start)->take($end - $start);
-        }
-
-        // Get the paginated data
-        $data = $query->get();
-
-        // Add extra data like reviews and appointments to each doctor
-        foreach ($data as $dataDoctor) {
-            $dataDR = DB::table("doctors_review")
-                ->select('doctors_review.*')
-                ->where("doctors_review.doctor_id", "=", $dataDoctor->user_id)
-                ->get();
-
-            $totalReviewPoints = $dataDR->sum('points'); // Assuming 'review_points' is the column name for review points
-            $numberOfReviews = $dataDR->count();
-            $averageRating = $numberOfReviews > 0 ? number_format($totalReviewPoints / $numberOfReviews, 2) : '0.00';
-
-            $dataDoctor->total_review_points = $totalReviewPoints;
-            $dataDoctor->number_of_reviews = $numberOfReviews;
-            $dataDoctor->average_rating = $averageRating;
-
-            $dataDApp = DB::table("appointments")
-                ->select('appointments.*')
-                ->where("appointments.doct_id", "=", $dataDoctor->user_id)
-                ->get();
-
-            $dataDoctor->total_appointment_done = count($dataDApp);
-        }
-
-        // Return the response with total records and data
-        $response = [
-            "response" => 200,
-            "total_record" => $total_record,
+        return response()->json([
+            'response' => 200,
             'data' => $data,
-        ];
-
-        return response()->json($response, 200);
+        ], 200);
     }
-
-
-
-    function getDataById($id)
+    public function getDataById($id)
     {
+        $rows = DB::table('v_doctors')
+            ->where('doctor_id', (int) $id)
+            ->orderBy('clinic_title')
+            ->get();
 
-        $data = DB::table("doctors")
-            ->select(
-                'doctors.*',
-                "users.f_name",
-                "users.l_name",
-                "users.phone",
-                "users.isd_code",
-                "users.gender",
-                "users.dob",
-                "users.email",
-                "users.image",
-                "users.address",
-                "users.city",
-                "users.state",
-                "users.postal_code",
-                "users.isd_code_sec",
-                "users.phone_sec",
-                "department.title as department_name",
-                'clinics.title as clinic_title',
-                "clinics.address as clinics_address",
-                'clinics.image as clinic_thumb_image',
-                'clinics.phone as clinic_phone',
-                'clinics.phone_second as clinic_phone_second',
-                'clinics.email as clinic_email',
-                'clinics.stop_booking as clinic_stop_booking',
-                'clinics.coupon_enable as clinic_coupon_enable',
-                'clinics.latitude as clinic_latitude',
-                'clinics.longitude as clinic_longitude',
-                'clinics.tax as clinic_tax',
-                'cities.title as city_title',
-                'states.title as state_title'  ,
-                
-            )
-            ->Join('users', 'users.id', '=', 'doctors.user_id')
-            ->join('department', 'department.id', '=', 'doctors.department')
-            ->join('clinics', 'clinics.id', '=', 'doctors.clinic_id')
-            ->join('cities', 'cities.id', '=', 'clinics.city_id')
-            ->join('states', 'states.id', '=', 'cities.state_id')
-            ->where("doctors.user_id", "=", $id)
-            ->first();
-
-        if ($data != null) {
-
-            $dataDR = DB::table("doctors_review")
-                ->select('doctors_review.*')
-                ->where("doctors_review.doctor_id", "=", $data->user_id)
-                ->get();
-            // Calculate the total review points
-            $totalReviewPoints = $dataDR->sum('points'); // Assuming 'review_points' is the column name for review points
-
-            // Count the number of reviews
-            $numberOfReviews = $dataDR->count();
-            // Calculate the average rating
-            $averageRating = $numberOfReviews > 0 ? number_format($totalReviewPoints / $numberOfReviews, 2) : '0.00';
-
-            $data->total_review_points = $totalReviewPoints;
-            $data->number_of_reviews = $numberOfReviews;
-            $data->average_rating = $averageRating;
-
-            $dataDApp = DB::table("appointments")
-                ->select('appointments.*')
-                ->where("appointments.doct_id", "=", $data->user_id)
-                ->get();
-            // Calculate the total review points
-            $data->total_appointment_done = count($dataDApp);
+        if ($rows->isEmpty()) {
+            return response()->json([
+                'response' => 404,
+                'message' => 'Doctor not found',
+                'data' => null,
+            ], 404);
         }
 
+        $first = $rows->first();
 
-        if ($data) {
-            $data->clinic_images = DB::table("clinic_images")
-                ->select('clinic_images.*')
-                ->where('clinic_images.clinic_id', $data->clinic_id)
-                ->OrderBy('created_at', 'desc')
-                ->get();
-        }
-
-        $response = [
-            "response" => 200,
-            'data' => $data,
+        $data = (object) [
+            'doctor_id' => $first->doctor_id,
+            'user_id' => $first->user_id,
+            'f_name' => $first->f_name,
+            'l_name' => $first->l_name,
+            'doctor_name' => $first->doctor_name,
+            'email' => $first->email,
+            'phone' => $first->phone,
+            'image' => $first->image,
+            'gender' => $first->gender,
+            'dob' => $first->dob,
+            'address' => $first->address,
+            'city' => $first->city,
+            'state' => $first->state,
+            'postal_code' => $first->postal_code,
+            'department' => $first->department,
+            'department_title' => $first->department_title,
+            'specialization' => $first->specialization,
+            'ex_year' => $first->ex_year,
+            'video_appointment' => $first->video_appointment,
+            'video_provider' => $first->video_provider,
+            'clinic_appointment' => $first->clinic_appointment,
+            'emergency_appointment' => $first->emergency_appointment,
+            'opd_fee' => $first->opd_fee,
+            'video_fee' => $first->video_fee,
+            'emg_fee' => $first->emg_fee,
+            'clinics' => $rows->map(function ($row) {
+                return [
+                    'clinic_id' => $row->clinic_id,
+                    'clinic_title' => $row->clinic_title,
+                    'is_active' => $row->is_active,
+                    'is_default' => $row->is_default,
+                    'active' => $row->active,
+                    'stop_booking' => $row->stop_booking,
+                ];
+            })->values(),
         ];
 
-
-        return response($response, 200);
+        return response()->json([
+            'response' => 200,
+            'data' => $data,
+        ], 200);
     }
 
     function deleteData(Request $request){
@@ -590,5 +501,71 @@ class DoctorController extends Controller
         return Helpers::errorResponse("This record cannot be deleted because it is linked to multiple data entries in the system. You can only deactivate it to prevent future use.");
                   }         
     
+    }
+    public function updateDoctorClinicStatus(Request $request)
+    {
+        $request->validate([
+            'doctor_id' => 'required|integer',
+            'clinic_id' => 'required|integer',
+            'active' => 'nullable|integer',
+            'stop_booking' => 'nullable|integer',
+        ]);
+
+        $doctor = DB::table('doctors')
+            ->where('id', $request->doctor_id)
+            ->first();
+
+        if (!$doctor) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Doctor not found.',
+            ], 404);
+        }
+
+        $query = DB::table('user_clinics')
+            ->where('user_id', $doctor->user_id)
+            ->where('clinic_id', $request->clinic_id);
+
+        $exists = $query->exists();
+
+        if (!$exists) {
+            return response()->json([
+                'status' => false,
+                'message' => 'Doctor clinic relation not found.',
+            ], 404);
+        }
+
+        $data = [
+            'updated_at' => now(),
+        ];
+
+        if ($request->has('active')) {
+            $data['active'] = (int) $request->active;
+        }
+
+        if ($request->has('stop_booking')) {
+            $data['stop_booking'] = (int) $request->stop_booking;
+        }
+
+        $query->update($data);
+
+        return response()->json([
+            'status' => true,
+            'message' => 'Doctor clinic status updated successfully.',
+        ], 200);
+    }
+    public function getDoctorsByClinic($clinicId)
+    {
+        $data = DB::table('v_doctors')
+            ->where('clinic_id', (int) $clinicId)
+            ->where('active', 1)
+            ->where('stop_booking', 0)
+            ->orderBy('doctor_name')
+            ->get();
+
+        return response()->json([
+            'response' => 200,
+            'data' => $data,
+        ], 200);
     }
 }

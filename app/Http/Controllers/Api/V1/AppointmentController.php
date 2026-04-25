@@ -24,6 +24,8 @@ use App\Events\DoctorJoinedVideoAppointment;
 use Illuminate\Support\Str;
 use App\Services\AgoraJoinDataService;
 use Illuminate\Support\Facades\Http;
+use App\Models\TimeSlotsModel;
+use App\Models\TimeSlotsVideoModel;
 
 
 class AppointmentController extends Controller
@@ -35,15 +37,6 @@ class AppointmentController extends Controller
         $this->agoraJoinDataService = $agoraJoinDataService;
     }
 
-    protected function resolveAppointmentPaymentStatusByType(?int $idPaymentType): string
-    {
-        if (is_null($idPaymentType)) {
-            return 'Unpaid';
-        }
-
-        return $idPaymentType >= 8000 ? 'Paid' : 'Unpaid';
-    }
-
     protected function isPaidByType(?int $idPaymentType): bool
     {
         return !is_null($idPaymentType) && $idPaymentType >= 8000;
@@ -52,371 +45,151 @@ class AppointmentController extends Controller
     // update status to paid/unpaid according to payment type
     function updateStatusToPaid(Request $request)
     {
-        $validator = Validator::make(request()->all(), [
-            'appointment_id' => 'required',
-            'payment_method' => 'required',
+        $validator = Validator::make($request->all(), [
+            'appointment_id' => 'required|integer',
+            'payment_method' => 'required|string',
             'id_payment_type' => 'required|integer',
+            'total_amount' => 'nullable|numeric',
         ]);
 
         if ($validator->fails()) {
-            return response(["response" => 400], 400);
+            return response(['response' => 400], 400);
         }
 
         try {
             DB::beginTransaction();
 
-            $appointment_id = $request->appointment_id;
-            $timeStamp = date("Y-m-d H:i:s");
-            $date = date("Y-m-d");
+            $appointmentId = (int) $request->appointment_id;
             $idPaymentType = (int) $request->id_payment_type;
+            $timeStamp = now();
+            $date = now()->toDateString();
+
             $resolvedPaymentStatus = $this->resolveAppointmentPaymentStatusByType($idPaymentType);
 
-            $dataInvoiceModel = AppointmentInvoiceModel::where('appointment_id', $appointment_id)->first();
-
-            if ($dataInvoiceModel == null) {
-                throw new \Exception('Error');
-            }
-
-            $dataTXNModel = new AllTransactionModel;
-            $dataTXNModel->amount  = $dataInvoiceModel->total_amount;
-            $dataTXNModel->user_id  = $dataInvoiceModel->user_id;
-            $dataTXNModel->patient_id  = $dataInvoiceModel->patient_id;
-            $dataTXNModel->clinic_id  = $dataInvoiceModel->clinic_id;
-            $dataTXNModel->transaction_type = "Debited";
-            $dataTXNModel->created_at = $timeStamp;
-            $dataTXNModel->updated_at = $timeStamp;
-
-            $qResponceTxn = $dataTXNModel->save();
-            if (!$qResponceTxn) {
+            if ($resolvedPaymentStatus !== 'Paid') {
                 DB::rollBack();
-                return Helpers::errorResponse("error");
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Selected payment type does not resolve to Paid.',
+                ], 422);
             }
 
-            $dataPaymentModel = new AppointmentPaymentModel;
-            $dataPaymentModel->txn_id = $dataTXNModel->id;
-            $dataPaymentModel->invoice_id   = $dataInvoiceModel->id;
-            $dataPaymentModel->amount   = $dataInvoiceModel->total_amount;
-            $dataPaymentModel->payment_time_stamp   = $timeStamp;
-            $dataPaymentModel->clinic_id  = $dataInvoiceModel->clinic_id;
-            $dataPaymentModel->payment_method   = $request->payment_method;
-            $dataPaymentModel->created_at = $timeStamp;
-            $dataPaymentModel->updated_at = $timeStamp;
-            $qResponcePayment = $dataPaymentModel->save();
+            $appointment = AppointmentModel::where('id', $appointmentId)->first();
 
-            $dataTXNModel->appointment_id = $appointment_id;
-            $dataTXNModel->save();
-
-            $dataInvoiceModel->status = $resolvedPaymentStatus;
-            $resDataInvoiceModel = $dataInvoiceModel->save();
-            if (!$resDataInvoiceModel) {
+            if (!$appointment) {
                 DB::rollBack();
-                return Helpers::errorResponse("error");
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Appointment not found.',
+                ], 404);
             }
 
-            $appModel = AppointmentModel::where("id", $appointment_id)->first();
-            $appModel->payment_status = $resolvedPaymentStatus;
-            $resAppModel = $appModel->save();
-            if (!$resAppModel) {
+            if ($appointment->id_payment) {
                 DB::rollBack();
-                return Helpers::errorResponse("error");
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Appointment already has a payment registered.',
+                ], 422);
             }
 
-            DB::commit();
-            return Helpers::successWithIdResponse("successfully", $appointment_id);
-        } catch (\Exception $e) {
-            DB::rollBack();
-            return Helpers::errorResponse("error");
-        }
-    }
-
-    // add new data
-    function addData(Request $request)
-    {
-        $validator = Validator::make(request()->all(), [
-            'status' => 'required',
-            'date' => 'required',
-            'time_slots' => 'required',
-            'doct_id' => 'required',
-            'dept_id' => 'required',
-            'type' => 'required',
-            'id_payment_type' => 'nullable|integer',
-            'total_amount' => 'required',
-            'fee' => 'required',
-            'invoice_description' => 'required'
-        ]);
-
-        if ($validator->fails()) {
-            return response(["response" => 400], 400);
-        }
-
-        try {
-            DB::beginTransaction();
-            $timeStamp = date("Y-m-d H:i:s");
-            $date = date("Y-m-d");
-
-            if (isset($request->family_member_id) && isset($request->patient_id)) {
-                DB::rollBack();
-                return Helpers::errorResponse("error");
-            }
-
-            $doctModel = DB::table("doctors")
-                ->select('doctors.clinic_id', 'doctors.video_provider')
-                ->where('doctors.user_id', '=', $request->doct_id)
+            $paymentType = DB::table('payment_types')
+                ->select('id', 'name', 'active')
+                ->where('id', $idPaymentType)
                 ->first();
 
-            $clinicId = $doctModel->clinic_id ?? null;
-            $doctorVideoProvider = strtolower(trim($doctModel->video_provider ?? 'agora'));
-
-            if ($doctModel == null || $clinicId == null) {
+            if (!$paymentType || (int) $paymentType->active !== 1) {
                 DB::rollBack();
-                return Helpers::errorResponse("error");
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Invalid payment type.',
+                ], 422);
             }
 
-            $idPaymentType = isset($request->id_payment_type) ? (int) $request->id_payment_type : null;
+            $patient = DB::table('patients')
+                ->select('id', 'user_id')
+                ->where('id', $appointment->patient_id)
+                ->first();
 
-            if (is_null($idPaymentType) && isset($request->payment_status)) {
-                $resolvedPaymentStatus = $request->payment_status === 'Paid' ? 'Paid' : 'Unpaid';
+            if (!$patient || !$patient->user_id) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Patient payer user not found.',
+                ], 422);
+            }
+
+            $invoice = AppointmentInvoiceModel::where('appointment_id', $appointmentId)->first();
+
+            $amount = (float) ($appointment->amount ?? $request->total_amount ?? $request->fee ?? $invoice->total_amount ?? 0);
+
+            if (!$invoice) {
+                $invoice = new AppointmentInvoiceModel();
+                $invoice->patient_id = $appointment->patient_id;
+                $invoice->user_id = $patient->user_id;
+                $invoice->clinic_id = $appointment->clinic_id;
+                $invoice->appointment_id = $appointment->id;
+                $invoice->status = 'Paid';
+                $invoice->total_amount = $amount;
+                $invoice->invoice_date = $date;
+                $invoice->created_at = $timeStamp;
+                $invoice->updated_at = $timeStamp;
+                $invoice->save();
+
+                $invoiceItem = new AppointmentInvoiceItemModel();
+                $invoiceItem->invoice_id = $invoice->id;
+                $invoiceItem->description = $appointment->type ?? 'Appointment';
+                $invoiceItem->quantity = 1;
+                $invoiceItem->clinic_id = $appointment->clinic_id;
+                $invoiceItem->unit_price = $amount;
+                $invoiceItem->service_charge = 0;
+                $invoiceItem->total_price = $amount;
+                $invoiceItem->unit_tax = 0;
+                $invoiceItem->unit_tax_amount = 0;
+                $invoiceItem->created_at = $timeStamp;
+                $invoiceItem->updated_at = $timeStamp;
+                $invoiceItem->save();
             } else {
-                $resolvedPaymentStatus = $this->resolveAppointmentPaymentStatusByType($idPaymentType);
-            }
-
-            $patientId = $request->patient_id;
-
-            if (!isset($request->patient_id)) {
-                if (!isset($request->family_member_id)) {
-                    DB::rollBack();
-                    return Helpers::errorResponse("error");
+                $invoice->status = 'Paid';
+                if ((float) $invoice->total_amount <= 0 && $amount > 0) {
+                    $invoice->total_amount = $amount;
                 }
-
-                $dataFamilyModel = FamilyMembersModel::where('id', $request->family_member_id)->first();
-                if ($dataFamilyModel == null) {
-                    DB::rollBack();
-                    return Helpers::errorResponse("error");
-                }
-
-                $dataPatientModelExists = PatientModel::where('f_name', $dataFamilyModel->f_name)
-                    ->where('l_name', $dataFamilyModel->l_name)
-                    ->where('phone', $dataFamilyModel->phone)
-                    ->where('clinic_id', $clinicId)
-                    ->first();
-
-                if ($dataPatientModelExists == null) {
-                    $dataPatientModel = new PatientModel;
-                    $dataPatientModel->f_name = $dataFamilyModel->f_name;
-                    $dataPatientModel->l_name = $dataFamilyModel->l_name;
-                    $dataPatientModel->phone = $dataFamilyModel->phone;
-                    $dataPatientModel->user_id = $dataFamilyModel->user_id;
-                    $dataPatientModel->isd_code = $dataFamilyModel->isd_code;
-                    $dataPatientModel->dob = $dataFamilyModel->dob;
-                    $dataPatientModel->clinic_id = $clinicId;
-                    $dataPatientModel->gender = $dataFamilyModel->gender;
-
-                    $resPatient = $dataPatientModel->save();
-                    $dataPatientModel->mrn = $dataPatientModel->id;
-                    $dataPatientModel->save();
-
-                    if (!$resPatient) {
-                        DB::rollBack();
-                        return Helpers::errorResponse("error");
-                    }
-
-                    $patientId = $dataPatientModel->id;
-                } else {
-                    $patientId = $dataPatientModelExists->id;
-                }
+                $invoice->updated_at = $timeStamp;
+                $invoice->save();
             }
 
-            if (isset($request->payment_transaction_id)) {
-                $dataTXNModel = new AllTransactionModel;
-                $dataTXNModel->payment_transaction_id = $request->payment_transaction_id;
-                $dataTXNModel->amount  = $request->total_amount;
-                $dataTXNModel->user_id  = $request->user_id;
-                $dataTXNModel->patient_id  = $patientId;
-                $dataTXNModel->clinic_id = $clinicId;
-                $dataTXNModel->transaction_type = "Debited";
-                $dataTXNModel->created_at = $timeStamp;
-                $dataTXNModel->updated_at = $timeStamp;
-                $dataTXNModel->is_wallet_txn = $request->is_wallet_txn ?? 0;
+            $providerReference = $request->provider_reference
+                ?? ('APPT-' . $appointment->id . '-' . now()->timestamp);
 
-                $qResponceTxn = $dataTXNModel->save();
-                if (!$qResponceTxn) {
-                    DB::rollBack();
-                    return Helpers::errorResponse("error");
-                }
+            $paymentId = $this->createPaymentForAppointment(
+                $appointment,
+                (int) $patient->user_id,
+                $idPaymentType,
+                $paymentType->name,
+                $request->payment_provider ?? 'manual',
+                $request->payment_method_code ?? $request->payment_method,
+                $providerReference,
+                $amount
+            );
 
-                if ($request->is_wallet_txn) {
-                    $userModel = User::where("id", $request->user_id)->first();
-                    if (!$userModel) {
-                        DB::rollBack();
-                        return Helpers::errorResponse("error");
-                    }
+            $appointment->id_payment = $paymentId;
+            $appointment->payment_status = 'Paid';
+            $appointment->payment_confirmed_at = $timeStamp;
+            $appointment->updated_at = $timeStamp;
+            $appointment->save();
 
-                    $userOldAmount = $userModel->wallet_amount ?? 0;
-                    $deductAmount = $request->total_amount;
-                    if ($userOldAmount < $deductAmount) {
-                        DB::rollBack();
-                        return Helpers::errorResponse("Iinsufficient amount in wallet");
-                    }
+            DB::commit();
 
-                    $userNewAmount = $userOldAmount - $deductAmount;
-                    $userModel->wallet_amount = $userNewAmount;
-                    $qResponceWU = $userModel->save();
-                    if (!$qResponceWU) {
-                        DB::rollBack();
-                        return Helpers::errorResponse("error");
-                    }
-
-                    $dataTXNModel->last_wallet_amount = $userOldAmount;
-                    $dataTXNModel->new_wallet_amount = $userNewAmount;
-                    $qResponceTxnWalletUpdate = $dataTXNModel->save();
-                    if (!$qResponceTxnWalletUpdate) {
-                        DB::rollBack();
-                        return Helpers::errorResponse("error");
-                    }
-                }
-            }
-
-            $dataModel = new AppointmentModel;
-            $durationMinutes = (int) ($request->duration_minutes ?? 0);
-
-            if ($durationMinutes <= 0) {
-                $dayName = date('l', strtotime($request->date));
-
-                $slotConfig = DB::table('time_slots')
-                    ->where('doct_id', $request->doct_id)
-                    ->where('day', $dayName)
-                    ->first();
-
-                $durationMinutes = (int) ($slotConfig->time_duration ?? 15);
-            }
-
-            $dataModel->patient_id = $patientId;
-            $dataModel->status = $request->status;
-            $dataModel->date = $request->date;
-            $dataModel->time_slots = $request->time_slots;
-            $dataModel->duration_minutes = $durationMinutes;
-            $dataModel->doct_id = $request->doct_id;
-            $dataModel->dept_id = $request->dept_id;
-            $dataModel->clinic_id = $clinicId;
-            $dataModel->type = $request->type;
-            $dataModel->source = $request->source;
-            $dataModel->payment_status = $resolvedPaymentStatus;
-
-            if ($request->type === "Video Consultant") {
-                $dataModel->video_provider = in_array($doctorVideoProvider, ['google', 'agora'], true)
-                    ? $doctorVideoProvider
-                    : 'agora';
-            } else {
-                $dataModel->video_provider = null;
-                $dataModel->meeting_id = null;
-                $dataModel->meeting_link = null;
-            }
-
-            if (isset($request->meeting_id)) {
-                $dataModel->meeting_id = $request->meeting_id;
-            }
-            if (isset($request->meeting_link)) {
-                $dataModel->meeting_link = $request->meeting_link;
-            }
-
-            $dataModel->created_at = $timeStamp;
-            $dataModel->updated_at = $timeStamp;
-
-            $qResponce = $dataModel->save();
-
-            if ($qResponce) {
-                if (isset($request->coupon_id)) {
-                    $dataCouponUseModel = new CouponUseModel;
-                    $dataCouponUseModel->user_id = $request->user_id;
-                    $dataCouponUseModel->clinic_id = $clinicId;
-                    $dataCouponUseModel->appointment_id  =  $dataModel->id;
-                    $dataCouponUseModel->coupon_id   = $request->coupon_id;
-                    $dataCouponUseModel->created_at = now();
-                    $dataCouponUseModel->updated_at = now();
-                    $dataCouponUseModel->save();
-
-                    if (!$dataCouponUseModel) {
-                        throw new \Exception('Error');
-                    }
-                }
-
-                $dataInvoiceModel = new AppointmentInvoiceModel;
-                $dataInvoiceModel->patient_id = $patientId;
-                $dataInvoiceModel->user_id = $request->user_id;
-                $dataInvoiceModel->clinic_id = $clinicId;
-                $dataInvoiceModel->appointment_id  = $dataModel->id;
-                $dataInvoiceModel->status = $resolvedPaymentStatus;
-                $dataInvoiceModel->total_amount  = $request->total_amount;
-                $dataInvoiceModel->invoice_date = $date;
-                $dataInvoiceModel->created_at = $timeStamp;
-                $dataInvoiceModel->updated_at = $timeStamp;
-                $dataInvoiceModel->coupon_title = $request->coupon_title;
-                $dataInvoiceModel->coupon_value = $request->coupon_value;
-                $dataInvoiceModel->coupon_off_amount = $request->coupon_off_amount;
-                $dataInvoiceModel->coupon_id = $request->coupon_id;
-                $qResponceInvoice = $dataInvoiceModel->save();
-
-                if ($qResponceInvoice) {
-                    $dataInvoiceItemModel = new AppointmentInvoiceItemModel;
-                    $dataInvoiceItemModel->invoice_id = $dataInvoiceModel->id;
-                    $dataInvoiceItemModel->description  = $request->invoice_description;
-                    $dataInvoiceItemModel->quantity = 1;
-                    $dataInvoiceItemModel->clinic_id = $clinicId;
-                    $dataInvoiceItemModel->unit_price  = $request->fee;
-                    $dataInvoiceItemModel->service_charge =  $request->service_charge ?? 0;
-                    $dataInvoiceItemModel->total_price = $request->unit_total_amount;
-                    $dataInvoiceItemModel->unit_tax  = $request->tax ?? 0;
-                    $dataInvoiceItemModel->unit_tax_amount  = $request->unit_tax_amount ?? 0;
-                    $dataInvoiceItemModel->created_at = $timeStamp;
-                    $dataInvoiceItemModel->updated_at = $timeStamp;
-
-                    $qResponceInvoiceItem = $dataInvoiceItemModel->save();
-
-                    if ($qResponceInvoiceItem) {
-                        if (isset($request->payment_transaction_id)) {
-                            $dataPaymentModel = new AppointmentPaymentModel;
-                            $dataPaymentModel->txn_id = $dataTXNModel->id;
-                            $dataPaymentModel->invoice_id   = $dataInvoiceModel->id;
-                            $dataPaymentModel->amount   = $request->total_amount;
-                            $dataPaymentModel->payment_time_stamp   = $timeStamp;
-                            $dataPaymentModel->clinic_id = $clinicId;
-                            $dataPaymentModel->payment_method   = $request->payment_method;
-                            $dataPaymentModel->created_at = $timeStamp;
-                            $dataPaymentModel->updated_at = $timeStamp;
-                            $qResponcePayment = $dataPaymentModel->save();
-                        }
-
-                        if (isset($request->payment_transaction_id)) {
-                            $dataTXNModel->appointment_id = $dataModel->id;
-                            $dataTXNModel->save();
-                        }
-
-                        DB::commit();
-
-                        if ($request->type == "Video Consultant" && $dataModel->video_provider === 'zoom') {
-                            $zoomController = new ZoomVideoCallController();
-                            $zoomController->createMeeting($dataModel->id, $dataModel->date, $dataModel->time_slots);
-                        }
-
-                        $notificationCentralController = new NotificationCentralController();
-                        $notificationCentralController->sendAppointmentNotificationToUsers($dataModel->id);
-
-                        return Helpers::successWithIdResponse("successfully", $dataModel->id);
-                    } else {
-                        throw new \Exception('Error');
-                    }
-                } else {
-                    throw new \Exception('Error');
-                }
-            } else {
-                throw new \Exception('Error');
-            }
+            return Helpers::successWithIdResponse('successfully', $appointmentId);
         } catch (\Exception $e) {
             DB::rollBack();
-            return Helpers::errorResponse("error $e");
+
+            return response()->json([
+                'status' => false,
+                'message' => 'error ' . $e->getMessage(),
+            ], 500);
         }
     }
-
+        
     // appointment resch
     function appointmentResch(Request $request)
     {
@@ -616,45 +389,43 @@ class AppointmentController extends Controller
     }
 
     // get data
-    function getBookedTimeSlotsByDoctIdAndDateAndTpe(Request $request)
+    public function getBookedTimeSlotsByDoctIdAndDateAndTpe(Request $request)
     {
-        $validator = Validator::make(request()->all(), [
-            'date' => 'required',
-            'doct_id' => 'required',
-            'type' => 'required'
+        $request->validate([
+            'doct_id' => 'required|integer',
+            'date' => 'required|date',
+            'type' => 'required|string',
+            'clinic_id' => 'nullable|integer',
         ]);
 
-        if ($validator->fails()) {
-            return response(["response" => 400], 400);
-        }
-
-        $data = DB::table("appointments")
+        $data = AppointmentModel::query()
             ->select(
                 DB::raw('TIME_FORMAT(appointments.time_slots, "%H:%i") as time_slots'),
                 'appointments.date',
                 'appointments.type',
                 'appointments.id as appointment_id'
             )
-            ->where("appointments.status", "!=", 'Rejected')
-            ->where("appointments.status", "!=", 'Completed')
-            ->where("appointments.status", "!=", 'Cancelled')
-            ->where("appointments.date", "=", $request->date)
-            ->where("appointments.type", "=", $request->type)
-            ->where("appointments.doct_id", "=", $request->doct_id)
-            ->get();
+            ->where('appointments.doct_id', '=', $request->doct_id)
+            ->whereDate('appointments.date', '=', $request->date)
+            ->where('appointments.type', '=', $request->type)
+            ->where('appointments.status', '!=', 'Rejected')
+            ->where('appointments.status', '!=', 'Completed')
+            ->where('appointments.status', '!=', 'Cancelled');
 
-        $response = [
-            "response" => 200,
-            'data' => $data,
-        ];
+        if ($request->filled('clinic_id')) {
+            $data->where('appointments.clinic_id', '=', $request->clinic_id);
+        }
 
-        return response($response, 200);
+        return response()->json([
+            'status' => true,
+            'response' => 200,
+            'data' => $data->get(),
+        ], 200);
     }
-
     // get data by id
-    function getDataById($id)
+    public function getDataById($id)
     {
-        $data = DB::table("appointments")
+        $data = DB::table('appointments')
             ->select(
                 'appointments.*',
                 'patients.user_id',
@@ -664,12 +435,17 @@ class AppointmentController extends Controller
                 'patients.phone as patient_phone',
                 'patients.gender as patient_gender',
                 'department.title as dept_title',
-                'users.f_name as doct_f_name',
-                'users.l_name as doct_l_name',
-                "users.image as doct_image",
-                "doctors.specialization as doct_specialization",
+
+                'vd.doctor_name as doct_name',
+                'vd.f_name as doct_f_name',
+                'vd.l_name as doct_l_name',
+                'vd.image as doct_image',
+                'vd.specialization as doct_specialization',
+                'vd.email as doct_email',
+                'vd.phone as doct_phone',
+
                 'clinics.title as clinic_title',
-                "clinics.address as clinics_address",
+                'clinics.address as clinics_address',
                 'clinics.image as clinic_thumb_image',
                 'clinics.phone as clinic_phone',
                 'clinics.phone_second as clinic_phone_second',
@@ -678,48 +454,38 @@ class AppointmentController extends Controller
                 'clinics.latitude as clinic_latitude',
                 'clinics.longitude as clinic_longitude',
                 'clinics.ambulance_number as clinic_ambulance_number',
-                'clinics.ambulance_btn_enable as clinic_ambulance_btn_enable',
+                'clinics.ambulance_btn_enable as clinic_ambulance_btn_enable'
             )
-            ->Join('patients', 'patients.id', '=', 'appointments.patient_id')
-            ->Join('department', 'department.id', '=', 'appointments.dept_id')
-            ->Join('users', 'users.id', '=', 'appointments.doct_id')
+            ->join('patients', 'patients.id', '=', 'appointments.patient_id')
+            ->join('department', 'department.id', '=', 'appointments.dept_id')
             ->join('clinics', 'clinics.id', '=', 'appointments.clinic_id')
-            ->LeftJoin('doctors', 'doctors.user_id', '=', 'appointments.doct_id')
+            ->leftJoin('v_doctors as vd', 'vd.doctor_id', '=', 'appointments.doct_id')
             ->where('appointments.id', '=', $id)
             ->first();
 
         if ($data != null) {
-            $dataDR = DB::table("doctors_review")
-                ->select('doctors_review.*')
-                ->where("doctors_review.doctor_id", "=", $data->doct_id)
-                ->get();
+            $reviewAgg = DB::table('doctors_review')
+                ->selectRaw('COALESCE(SUM(points),0) as total_review_points, COUNT(*) as number_of_reviews')
+                ->where('doctor_id', '=', $data->doct_id)
+                ->first();
 
-            $totalReviewPoints = $dataDR->sum('points');
-            $numberOfReviews = $dataDR->count();
-            $averageRating = $numberOfReviews > 0 ? number_format($totalReviewPoints / $numberOfReviews, 2) : '0.00';
+            $data->total_review_points = (int) ($reviewAgg->total_review_points ?? 0);
+            $data->number_of_reviews = (int) ($reviewAgg->number_of_reviews ?? 0);
+            $data->average_rating = $data->number_of_reviews > 0
+                ? number_format($data->total_review_points / $data->number_of_reviews, 2)
+                : '0.00';
 
-            $data->total_review_points = $totalReviewPoints;
-            $data->number_of_reviews = $numberOfReviews;
-            $data->average_rating = $averageRating;
+            $data->total_appointment_done = DB::table('appointments')
+                ->where('appointments.doct_id', '=', $data->doct_id)
+                ->count();
 
-            $dataDApp = DB::table("appointments")
-                ->select('appointments.*')
-                ->where("appointments.doct_id", "=", $data->doct_id)
-                ->get();
-
-            $data->total_appointment_done = count($dataDApp);
-        }
-
-        if ($data != null) {
             $data = $this->appendVideoFlags($data);
         }
 
-        $response = [
-            "response" => 200,
+        return response([
+            'response' => 200,
             'data' => $data,
-        ];
-
-        return response($response, 200);
+        ], 200);
     }
 
     protected function appendVideoFlags(object $item): object
@@ -765,7 +531,7 @@ class AppointmentController extends Controller
 
     public function getData(Request $request)
     {
-        $query = DB::table("appointments")
+        $query = DB::table('appointments')
             ->select(
                 'appointments.*',
                 'patients.user_id',
@@ -773,17 +539,20 @@ class AppointmentController extends Controller
                 'patients.l_name as patient_l_name',
                 'patients.phone as patient_phone',
                 'department.title as dept_title',
-                'users.f_name as doct_f_name',
-                'users.l_name as doct_l_name',
-                'users.image as doct_image',
-                'doctors.specialization as doct_specialization'
+
+                'vd.doctor_name as doct_name',
+                'vd.f_name as doct_f_name',
+                'vd.l_name as doct_l_name',
+                'vd.image as doct_image',
+                'vd.specialization as doct_specialization',
+                'vd.email as doct_email',
+
+                'clinics.title as clinic_title'
             )
             ->join('patients', 'patients.id', '=', 'appointments.patient_id')
             ->join('department', 'department.id', '=', 'appointments.dept_id')
-            ->join('users', 'users.id', '=', 'appointments.doct_id')
-            ->leftJoin('doctors', 'doctors.user_id', '=', 'appointments.doct_id')
-            ->orderBy("appointments.date", "DESC")
-            ->orderBy("appointments.time_slots", "DESC");
+            ->join('clinics', 'clinics.id', '=', 'appointments.clinic_id')
+            ->leftJoin('v_doctors as vd', 'vd.doctor_id', '=', 'appointments.doct_id');
 
         if ($request->filled('start_date')) {
             $query->whereDate('appointments.date', '>=', $request->start_date);
@@ -794,16 +563,14 @@ class AppointmentController extends Controller
         }
 
         if ($request->filled('status')) {
-            $status = explode(',', $request->status);
-            $query->whereIn('appointments.status', $status);
+            $statuses = array_filter(array_map('trim', explode(',', $request->status)));
+            if (!empty($statuses)) {
+                $query->whereIn('appointments.status', $statuses);
+            }
         }
 
-        if ($request->filled('user_id')) {
-            $query->where('patients.user_id', '=', $request->user_id);
-        }
-
-        if ($request->filled('doctor_id')) {
-            $query->where('appointments.doct_id', '=', $request->doctor_id);
+        if ($request->filled('doct_id')) {
+            $query->where('appointments.doct_id', '=', $request->doct_id);
         }
 
         if ($request->filled('clinic_id')) {
@@ -815,273 +582,193 @@ class AppointmentController extends Controller
         }
 
         if ($request->filled('type')) {
-            $query->where('appointments.type', '=', $request->type);
+            $types = array_filter(array_map('trim', explode(',', $request->type)));
+            if (!empty($types)) {
+                $query->whereIn('appointments.type', $types);
+            }
         }
 
         if ($request->filled('current_cancel_req_status')) {
-            $query->where('appointments.current_cancel_req_status', '=', $request->current_cancel_req_status);
+            $cancelStatuses = array_filter(array_map('trim', explode(',', $request->current_cancel_req_status)));
+            if (!empty($cancelStatuses)) {
+                $query->whereIn('appointments.current_cancel_req_status', $cancelStatuses);
+            }
         }
 
         if ($request->filled('search')) {
-            $search = $request->input('search');
+            $search = trim((string) $request->search);
             $query->where(function ($q) use ($search) {
-                $q->where('patients.user_id', 'like', "%$search%")
-                    ->orWhereRaw('CONCAT(patients.f_name, " ", patients.l_name) LIKE ?', ["%$search%"])
-                    ->orWhereRaw('CONCAT(users.f_name, " ", users.l_name) LIKE ?', ["%$search%"])
-                    ->orWhere('patients.phone', 'like', "%$search%")
-                    ->orWhere('department.title', 'like', "%$search%")
-                    ->orWhere('appointments.id', 'like', "%$search%")
-                    ->orWhere('appointments.status', 'like', "%$search%")
-                    ->orWhere('appointments.time_slots', 'like', "%$search%")
-                    ->orWhere('appointments.date', 'like', "%$search%")
-                    ->orWhere('appointments.type', 'like', "%$search%")
-                    ->orWhere('appointments.meeting_id', 'like', "%$search%")
-                    ->orWhere('appointment_invoice.status', 'like', "%$search%")
-                    ->orWhere('appointments.current_cancel_req_status', 'like', "%$search%")
-                    ->orWhere('doctors.specialization', 'like', "%$search%");
+                $q->where('patients.f_name', 'like', "%{$search}%")
+                    ->orWhere('patients.l_name', 'like', "%{$search}%")
+                    ->orWhere('vd.f_name', 'like', "%{$search}%")
+                    ->orWhere('vd.l_name', 'like', "%{$search}%")
+                    ->orWhere('patients.phone', 'like', "%{$search}%")
+                    ->orWhere('appointments.id', 'like', "%{$search}%")
+                    ->orWhere('appointments.status', 'like', "%{$search}%")
+                    ->orWhere('appointments.time_slots', 'like', "%{$search}%")
+                    ->orWhere('appointments.date', 'like', "%{$search}%")
+                    ->orWhere('appointments.type', 'like', "%{$search}%")
+                    ->orWhere('appointments.current_cancel_req_status', 'like', "%{$search}%")
+                    ->orWhere('vd.specialization', 'like', "%{$search}%");
             });
         }
 
-        $total_record = $query->count();
+        $total_record = (clone $query)->count();
 
-        if ($request->filled(['start', 'end'])) {
-            $start = $request->start;
-            $limit = $request->end - $start;
-            $query->skip($start)->take($limit);
+        if ($request->filled('start') && $request->filled('end')) {
+            $start = (int) $request->start;
+            $end = (int) $request->end;
+            $limit = max(0, $end - $start);
+
+            if ($limit > 0) {
+                $query->skip($start)->take($limit);
+            }
         }
 
-        $data = $query->get();
-        foreach ($data as $item) {
-            $this->appendVideoFlags($item);
-        }
+        $data = $query
+            ->orderByDesc('appointments.date')
+            ->orderByDesc('appointments.time_slots')
+            ->get()
+            ->map(function ($item) {
+                return $this->appendVideoFlags($item);
+            });
 
         return response()->json([
-            "response" => 200,
-            "total_record" => $total_record,
-            "data" => $data,
+            'response' => 200,
+            'total_record' => $total_record,
+            'data' => $data,
         ], 200);
-    }
-
-    public function getVideoJoinData(Request $request, $id)
-    {
-        try {
-            $user = $request->user();
-
-            if (!$user) {
-                return response()->json([
-                    'status' => false,
-                    'message' => 'Unauthenticated.',
-                ], 401);
-            }
-
-            $appointment = AppointmentModel::find((int) $id);
-
-            if (!$appointment) {
-                return response()->json([
-                    'status' => false,
-                    'message' => 'Appointment not found.',
-                ], 404);
-            }
-
-            $patient = PatientModel::find($appointment->patient_id);
-
-            $isPatientOwner = (int) ($patient->user_id ?? 0) === (int) $user->id;
-            $isDoctorOwner = (int) $appointment->doct_id === (int) $user->id;
-
-            if (!$isPatientOwner && !$isDoctorOwner) {
-                return response()->json([
-                    'status' => false,
-                    'message' => 'You do not have access to this appointment.',
-                ], 403);
-            }
-
-            if (($appointment->type ?? '') !== 'Video Consultant') {
-                return response()->json([
-                    'status' => false,
-                    'message' => 'This appointment is not a video consultation.',
-                ], 400);
-            }
-
-            if (($appointment->payment_status ?? 'Unpaid') !== 'Paid') {
-                return response()->json([
-                    'status' => false,
-                    'message' => 'Appointment must be paid before joining video.',
-                ], 400);
-            }
-
-            if (in_array($appointment->status, ['Rejected', 'Cancelled', 'Completed', 'Visited'], true)) {
-                return response()->json([
-                    'status' => false,
-                    'message' => 'This appointment is not available for video call.',
-                ], 400);
-            }
-
-            $provider = strtolower(trim((string) ($appointment->video_provider ?? 'agora')));
-            $meetingLink = trim((string) ($appointment->meeting_link ?? ''));
-
-            $isGoogleProvider = in_array($provider, ['google', 'google_meet', 'googlemeet', 'meet'], true);
-
-            if ($isGoogleProvider) {
-                if ($meetingLink !== '') {
-                    if ((int) $appointment->patient_id === (int) $user->id) {
-                        $appointment->patient_joined_at = $appointment->patient_joined_at ?? now();
-                        $appointment->save();
-                    }
-
-                    return response()->json([
-                        'status' => true,
-                        'doctor_joined' => !empty($appointment->doctor_joined_at),
-                        'waiting_for_doctor' => false,
-                        'data' => [
-                            'provider' => 'google',
-                            'meeting_id' => $appointment->meeting_id,
-                            'meeting_link' => $appointment->meeting_link,
-                            'google_calendar_event_id' => $appointment->google_calendar_event_id,
-                            'video_provider' => $appointment->video_provider,
-                            'doctor_joined_at' => $appointment->doctor_joined_at,
-                            'patient_joined_at' => $appointment->patient_joined_at,
-                        ],
-                    ], 200);
-                }
-
-                return response()->json([
-                    'status' => false,
-                    'doctor_joined' => false,
-                    'waiting_for_doctor' => true,
-                    'message' => 'Doctor has not opened the meeting yet',
-                    'data' => [
-                        'provider' => 'google',
-                        'meeting_id' => null,
-                        'meeting_link' => null,
-                        'google_calendar_event_id' => $appointment->google_calendar_event_id,
-                        'video_provider' => $appointment->video_provider,
-                    ],
-                ], 200);
-            }
-
-            $agoraResult = $this->agoraJoinDataService->buildJoinData(
-                $appointment,
-                (int) $user->id
-            );
-
-            if ((int) $appointment->patient_id === (int) $user->id) {
-                $appointment->patient_joined_at = $appointment->patient_joined_at ?? now();
-                $appointment->save();
-            }
-
-            return response()->json([
-                'status' => true,
-                'doctor_joined' => !empty($appointment->doctor_joined_at),
-                'waiting_for_doctor' => false,
-                'data' => $agoraResult['data'],
-            ], 200);
-        } catch (\Throwable $e) {
-            Log::error('AppointmentController@getVideoJoinData failed', [
-                'appointment_id' => (int) $id,
-                'user_id' => $request->user()?->id,
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-                'trace' => $e->getTraceAsString(),
-            ]);
-
-            return response()->json([
-                'status' => false,
-                'message' => 'Could not prepare video join data.',
-                'error' => $e->getMessage(),
-            ], 500);
-        }
     }
 
     private function createGoogleMeetForAppointment($appointment, $user): array
     {
-        $doctorUser = User::find($appointment->doct_id);
+        $doctor = DB::table('doctors')
+            ->select('id', 'user_id', 'department', 'video_provider')
+            ->where('id', $appointment->doct_id)
+            ->first();
+
+        if (!$doctor) {
+            throw new \RuntimeException('Doctor profile not found.');
+        }
+
+        $doctorUser = User::find($doctor->user_id);
 
         if (!$doctorUser) {
             throw new \RuntimeException('Doctor user not found.');
         }
 
+        if (
+            empty($doctorUser->google_access_token) &&
+            empty($doctorUser->google_refresh_token)
+        ) {
+            throw new \RuntimeException('Doctor Google account is not connected.');
+        }
+
         $accessToken = $doctorUser->google_access_token;
         $refreshToken = $doctorUser->google_refresh_token;
+        $expiresAt = $doctorUser->google_token_expires_at;
 
-        if (empty($accessToken) && empty($refreshToken)) {
-            throw new \RuntimeException('Doctor has no Google Calendar credentials.');
+        $needsRefresh = true;
+
+        if (!empty($accessToken) && !empty($expiresAt)) {
+            try {
+                $needsRefresh = now()->greaterThanOrEqualTo(
+                    \Carbon\Carbon::parse($expiresAt)->subMinutes(2)
+                );
+            } catch (\Throwable $e) {
+                $needsRefresh = true;
+            }
         }
 
-        if (
-            !empty($doctorUser->google_token_expires_at) &&
-            now()->greaterThanOrEqualTo(\Carbon\Carbon::parse($doctorUser->google_token_expires_at)->subMinutes(2))
-        ) {
+        if ($needsRefresh) {
+            if (empty($refreshToken)) {
+                throw new \RuntimeException('Doctor Google refresh token not found.');
+            }
+
             $tokenData = $this->refreshGoogleAccessToken($refreshToken);
 
-            $doctorUser->google_access_token = $tokenData['access_token'];
-            $doctorUser->google_token_expires_at = now()->addSeconds((int) ($tokenData['expires_in'] ?? 3600));
-            $doctorUser->save();
+            $accessToken = $tokenData['access_token'] ?? null;
+            $newRefreshToken = $tokenData['refresh_token'] ?? $refreshToken;
+            $expiresIn = (int) ($tokenData['expires_in'] ?? 3600);
 
-            $accessToken = $doctorUser->google_access_token;
+            if (empty($accessToken)) {
+                throw new \RuntimeException('Unable to refresh Google access token.');
+            }
+
+            $doctorUser->google_access_token = $accessToken;
+            $doctorUser->google_refresh_token = $newRefreshToken;
+            $doctorUser->google_token_expires_at = now()->addSeconds($expiresIn);
+            $doctorUser->save();
         }
 
-        $timeZone = config('app.timezone', 'America/Asuncion');
+        $client = new \Google\Client();
+        $client->setAccessToken($accessToken);
 
-        $start = new \DateTime(
-            trim($appointment->date . ' ' . $appointment->time_slots),
-            new \DateTimeZone($timeZone)
+        $calendar = new \Google\Service\Calendar($client);
+
+        $startDateTime = \Carbon\Carbon::parse(
+            $appointment->date . ' ' . $appointment->time_slots
         );
 
-        $durationMinutes = (int) ($appointment->duration_minutes ?? 15);
-        if ($durationMinutes <= 0) {
-            $durationMinutes = 15;
+        $endDateTime = (clone $startDateTime)->addMinutes(
+            (int) ($appointment->duration_minutes ?: 15)
+        );
+
+        $summary = 'Video Consultation #' . $appointment->id;
+
+        $description = 'Appointment #' . $appointment->id;
+        if (!empty($appointment->type)) {
+            $description .= ' - ' . $appointment->type;
         }
 
-        $end = (clone $start)->modify('+' . $durationMinutes . ' minutes');
-
-        $payload = [
-            'summary' => 'Medical video appointment #' . $appointment->id,
-            'description' => 'Appointment #' . $appointment->id,
+        $event = new \Google\Service\Calendar\Event([
+            'summary' => $summary,
+            'description' => $description,
             'start' => [
-                'dateTime' => $start->format(DATE_RFC3339),
-                'timeZone' => $timeZone,
+                'dateTime' => $startDateTime->toIso8601String(),
+                'timeZone' => config('app.timezone', 'UTC'),
             ],
             'end' => [
-                'dateTime' => $end->format(DATE_RFC3339),
-                'timeZone' => $timeZone,
+                'dateTime' => $endDateTime->toIso8601String(),
+                'timeZone' => config('app.timezone', 'UTC'),
             ],
             'conferenceData' => [
                 'createRequest' => [
+                    'requestId' => 'appt-' . $appointment->id . '-' . Str::uuid(),
                     'conferenceSolutionKey' => [
                         'type' => 'hangoutsMeet',
                     ],
-                    'requestId' => (string) Str::uuid(),
                 ],
             ],
-        ];
+        ]);
 
-        $response = Http::withToken($accessToken)->post(
-            'https://www.googleapis.com/calendar/v3/calendars/primary/events?conferenceDataVersion=1&sendUpdates=none',
-            $payload
-        );
+        $createdEvent = $calendar->events->insert('primary', $event, [
+            'conferenceDataVersion' => 1,
+            'sendUpdates' => 'none',
+        ]);
 
-        if (!$response->successful()) {
-            throw new \RuntimeException('Google Calendar event creation failed: ' . $response->body());
+        $meetingLink =
+            $createdEvent->getHangoutLink() ?:
+            data_get($createdEvent, 'conferenceData.entryPoints.0.uri');
+
+        $meetingId = null;
+        if ($meetingLink) {
+            $parts = parse_url($meetingLink);
+            if (!empty($parts['path'])) {
+                $meetingId = trim($parts['path'], '/');
+            }
         }
 
-        $event = $response->json();
-
-        $entryPoints = $event['conferenceData']['entryPoints'] ?? [];
-        $videoEntry = collect($entryPoints)->firstWhere('entryPointType', 'video');
-        $meetingLink = $videoEntry['uri'] ?? null;
-        $meetingId = $event['conferenceData']['conferenceId'] ?? ($event['id'] ?? null);
-
-        if (!$meetingLink) {
-            throw new \RuntimeException('Google Meet link not returned by Calendar API.');
+        if (empty($meetingLink)) {
+            throw new \RuntimeException('Google Meet link was not generated.');
         }
 
         return [
-            'meeting_id' => $meetingId,
             'meeting_link' => $meetingLink,
-            'google_calendar_event_id' => $event['id'] ?? null,
+            'meeting_id' => $meetingId,
+            'google_calendar_event_id' => $createdEvent->getId(),
         ];
-    }
+}
 
     private function refreshGoogleAccessToken(string $refreshToken): array
     {
@@ -1107,5 +794,726 @@ class AppointmentController extends Controller
         }
 
         return $data;
+    }
+    private function resolveAppointmentPaymentStatusByType(?int $idPaymentType): string
+    {
+        if (!$idPaymentType) {
+            return 'Unpaid';
+        }
+
+        return $idPaymentType >= 8000 ? 'Paid' : 'Unpaid';
+    }
+
+    
+    private function ensurePatientClinic(int $patientId, int $clinicId): object
+    {
+        $patient = DB::table('patients')
+            ->select('id', 'user_id')
+            ->where('id', $patientId)
+            ->first();
+
+        if (!$patient) {
+            throw new \RuntimeException('Patient not found.');
+        }
+
+        $exists = DB::table('patient_clinic')
+            ->where('patient_id', $patientId)
+            ->where('clinic_id', $clinicId)
+            ->exists();
+
+        if (!$exists) {
+            DB::table('patient_clinic')->insert([
+                'patient_id' => $patientId,
+                'clinic_id' => $clinicId,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        return $patient;
+    }
+
+    private function resolveOrCreatePatientByUserIdForClinic(int $userId, int $clinicId): object
+    {
+        $patient = DB::table('patients')
+            ->select('id', 'user_id')
+            ->where('user_id', $userId)
+            ->first();
+
+        if (!$patient) {
+            DB::statement(
+                "
+                INSERT INTO patients (
+                    clinic_id,
+                    user_id,
+                    f_name,
+                    l_name,
+                    isd_code,
+                    phone,
+                    city,
+                    state,
+                    address,
+                    email,
+                    gender,
+                    dob,
+                    image,
+                    postal_code,
+                    created_at,
+                    updated_at
+                )
+                SELECT
+                    ?,
+                    u.id,
+                    u.f_name,
+                    u.l_name,
+                    u.isd_code,
+                    u.phone,
+                    u.city,
+                    u.state,
+                    u.address,
+                    u.email,
+                    u.gender,
+                    u.dob,
+                    u.image,
+                    u.postal_code,
+                    NOW(),
+                    NOW()
+                FROM users u
+                WHERE u.id = ?
+                ",
+                [$clinicId, $userId]
+            );
+
+            $patient = DB::table('patients')
+                ->select('id', 'user_id')
+                ->where('user_id', $userId)
+                ->first();
+
+            if (!$patient) {
+                throw new \RuntimeException('Could not create patient record.');
+            }
+
+            DB::table('patients')
+                ->where('id', $patient->id)
+                ->update([
+                    'mrn' => $patient->id,
+                    'updated_at' => now(),
+                ]);
+        }
+
+        $exists = DB::table('patient_clinic')
+            ->where('patient_id', $patient->id)
+            ->where('clinic_id', $clinicId)
+            ->exists();
+
+        if (!$exists) {
+            DB::table('patient_clinic')->insert([
+                'patient_id' => $patient->id,
+                'clinic_id' => $clinicId,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        DB::table('users')
+            ->where('id', $userId)
+            ->update([
+                'patient_id' => $patient->id,
+                'updated_at' => now(),
+            ]);
+
+        return $patient;
+    }
+
+    private function resolvePaidPaymentStatusId(): int
+    {
+        return 99;
+    }
+    private function createPaymentForAppointment(
+        AppointmentModel $appointment,
+        int $payerUserId,
+        int $idPaymentType,
+        string $namePaymentType,
+        ?string $provider,
+        ?string $paymentMethodCode,
+        ?string $providerReference,
+        float $amount
+    ): int {
+        $paidStatusId = $this->resolvePaidPaymentStatusId();
+
+        $paymentId = DB::table('payments')->insertGetId([
+            'id_user' => $payerUserId,
+            'id_appointment' => $appointment->id,
+            'id_payment_type' => $idPaymentType,
+            'name_payment_type' => $namePaymentType,
+            'provider' => $provider,
+            'payment_method_code' => $paymentMethodCode,
+            'provider_reference' => $providerReference,
+            'id_payment_status' => $paidStatusId,
+            'currency_code' => 'PYG',
+            'confirmed_at' => now(),
+            'amount' => $amount,
+            'response_message' => 'Created from appointment registration as paid.',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return (int) $paymentId;
+    }
+    public function addData(Request $request)
+    {
+        $request->validate([
+            'patient_id' => 'required|integer',
+            'doct_id' => 'required|integer',
+            'clinic_id' => 'required|integer',
+            'date' => 'required|date',
+            'time' => 'required',
+            'appointment_type' => 'required|string',
+            'total_amount' => 'nullable|numeric',
+            'fee' => 'nullable|numeric',
+            'invoice_description' => 'nullable|string',
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            $timeStamp = now();
+            $date = now()->toDateString();
+
+            $doctorId = (int) $request->doct_id;
+            $clinicId = (int) $request->clinic_id;
+            $patientId = (int) $request->patient_id;
+            $appointmentType = $request->type ?? $request->appointment_type;
+            $appointmentDay = date('l', strtotime($request->date));
+            $timeSlotValue = $request->time_slots ?? $request->time;
+            $amount = (float) ($request->total_amount ?? $request->fee ?? 0);
+            $fee = (float) ($request->fee ?? 0);
+            $duration_minutes = (int) ($request->duration_minutes ?? 15);
+
+            $doctor = DB::table('v_doctors')
+                ->select(
+                    'doctor_id',
+                    'clinic_id',
+                    'department',
+                    'active',
+                    'stop_booking',
+                    'clinic_appointment',
+                    'video_appointment',
+                    'emergency_appointment',
+                    'is_active'
+                )
+                ->where('doctor_id', $doctorId)
+                ->where('clinic_id', $clinicId)
+                ->where('is_active', 1)
+                ->first();
+
+            if (!$doctor) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Selected doctor does not belong to the selected clinic.',
+                ], 422);
+            }
+
+            if ((int) $doctor->active !== 1) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Selected doctor is inactive in this clinic.',
+                ], 422);
+            }
+
+            if ((int) $doctor->stop_booking === 1) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Selected doctor is not accepting appointments in this clinic.',
+                ], 422);
+            }
+
+            if ($appointmentType === 'OPD' && (int) $doctor->clinic_appointment !== 1) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Selected doctor does not accept OPD appointments.',
+                ], 422);
+            }
+
+            if ($appointmentType === 'Video Consultant' && (int) $doctor->video_appointment !== 1) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Selected doctor does not accept video appointments.',
+                ], 422);
+            }
+
+            if ($appointmentType === 'Emergency' && (int) $doctor->emergency_appointment !== 1) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Selected doctor does not accept emergency appointments.',
+                ], 422);
+            }
+
+            try {
+                $patient = $this->ensurePatientClinic($patientId, $clinicId);
+            } catch (\RuntimeException $e) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => $e->getMessage(),
+                ], 422);
+            }
+
+            $slotQuery = $appointmentType === 'Video Consultant'
+                ? TimeSlotsVideoModel::query()
+                : TimeSlotsModel::query();
+
+            $slotExists = $slotQuery
+                ->where('doct_id', $doctorId)
+                ->where('clinic_id', $clinicId)
+                ->where('day', $appointmentDay)
+                ->where('time_start', '<=', $request->time)
+                ->where('time_end', '>', $request->time)
+                ->exists();
+
+            if (!$slotExists) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Selected time slot is not available for this doctor in this clinic.',
+                ], 422);
+            }
+
+            $alreadyBooked = AppointmentModel::query()
+                ->where('doct_id', $doctorId)
+                ->where('clinic_id', $clinicId)
+                ->whereDate('date', $request->date)
+                ->where('time_slots', $timeSlotValue)
+                ->whereNotIn('status', ['Cancelled', 'Rejected'])
+                ->exists();
+
+            if ($alreadyBooked) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'This appointment slot is already booked.',
+                ], 422);
+            }
+
+            $idPaymentType = $request->id_payment_type
+                ? (int) $request->id_payment_type
+                : null;
+
+            $paymentType = null;
+            if ($idPaymentType) {
+                $paymentType = DB::table('payment_types')
+                    ->select('id', 'name', 'active')
+                    ->where('id', $idPaymentType)
+                    ->first();
+
+                if (!$paymentType || (int) $paymentType->active !== 1) {
+                    DB::rollBack();
+                    return response()->json([
+                        'status' => false,
+                        'message' => 'Invalid payment type.',
+                    ], 422);
+                }
+            }
+
+            $paymentStatus = $this->resolveAppointmentPaymentStatusByType($idPaymentType);
+
+            if ($paymentStatus === 'Paid' && !$patient->user_id) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Patient payer user not found.',
+                ], 422);
+            }
+
+            $appointment = new AppointmentModel();
+            $appointment->patient_id = $patientId;
+            $appointment->status = $request->status ?? 'Pending';
+            $appointment->date = $request->date;
+            $appointment->time_slots = $timeSlotValue;
+            $appointment->duration_minutes = $request->duration_minutes ?? 15;
+            $appointment->amount = $amount;
+            $appointment->doct_id = $doctorId;
+            $appointment->clinic_id = $clinicId;
+            $appointment->dept_id = $request->dept_id ?? $doctor->department;
+            $appointment->type = $appointmentType;
+            $appointment->id_payment = null;
+            $appointment->payment_status = $paymentStatus;
+            $appointment->payment_reference = $request->payment_reference ?? null;
+            $appointment->payment_provider = $request->payment_provider ?? null;
+            $appointment->source = $request->source ?? 'Admin';
+            $appointment->created_at = $timeStamp;
+            $appointment->updated_at = $timeStamp;
+            
+
+
+            if ($paymentStatus === 'Paid') {
+                $appointment->payment_confirmed_at = $timeStamp;
+            }
+
+            $appointment->save();
+
+            if (isset($request->coupon_id)) {
+                $couponUse = new CouponUseModel();
+                $couponUse->user_id = $request->user_id ?? $patient->user_id;
+                $couponUse->clinic_id = $clinicId;
+                $couponUse->appointment_id = $appointment->id;
+                $couponUse->coupon_id = $request->coupon_id;
+                $couponUse->created_at = $timeStamp;
+                $couponUse->updated_at = $timeStamp;
+                $couponUse->save();
+            }
+
+            if ($paymentStatus === 'Paid') {
+                $invoice = new AppointmentInvoiceModel();
+                $invoice->patient_id = $patientId;
+                $invoice->user_id = $request->user_id ?? $patient->user_id;
+                $invoice->clinic_id = $clinicId;
+                $invoice->appointment_id = $appointment->id;
+                $invoice->status = $paymentStatus;
+                $invoice->total_amount = $amount;
+                $invoice->invoice_date = $date;
+                $invoice->created_at = $timeStamp;
+                $invoice->updated_at = $timeStamp;
+                $invoice->coupon_title = $request->coupon_title ?? null;
+                $invoice->coupon_value = $request->coupon_value ?? null;
+                $invoice->coupon_off_amount = $request->coupon_off_amount ?? null;
+                $invoice->coupon_id = $request->coupon_id ?? null;
+                $invoice->save();
+
+                $invoiceItem = new AppointmentInvoiceItemModel();
+                $invoiceItem->invoice_id = $invoice->id;
+                $invoiceItem->description = $request->invoice_description ?? $appointmentType;
+                $invoiceItem->quantity = 1;
+                $invoiceItem->clinic_id = $clinicId;
+                $invoiceItem->unit_price = $fee > 0 ? $fee : $amount;
+                $invoiceItem->service_charge = $request->service_charge ?? 0;
+                $invoiceItem->total_price = $request->unit_total_amount ?? $amount;
+                $invoiceItem->unit_tax = $request->tax ?? 0;
+                $invoiceItem->unit_tax_amount = $request->unit_tax_amount ?? 0;
+                $invoiceItem->created_at = $timeStamp;
+                $invoiceItem->updated_at = $timeStamp;
+                $invoiceItem->save();
+
+                if ($idPaymentType) {
+                    $providerReference = $request->provider_reference
+                        ?? ('APPT-' . $appointment->id . '-' . now()->timestamp);
+
+                    $paymentId = $this->createPaymentForAppointment(
+                        $appointment,
+                        (int) $patient->user_id,
+                        $idPaymentType,
+                        $paymentType->name,
+                        $request->payment_provider ?? null,
+                        $request->payment_method_code ?? null,
+                        $providerReference,
+                        $amount
+                    );
+
+                    $appointment->id_payment = $paymentId;
+                    $appointment->save();
+                }
+            }
+
+            DB::commit();
+
+            $notificationCentralController = new NotificationCentralController();
+            $notificationCentralController->sendAppointmentNotificationToUsers($appointment->id);
+
+            return response()->json([
+                'response' => 200,
+                'status' => true,
+                'message' => 'successfully',
+                'message_detail' => 'Appointment created successfully.',
+                'data' => $appointment,
+                'id' => $appointment->id,
+                'appointment_id' => $appointment->id,
+            ], 200);
+        } catch (\Exception $e) {
+            DB::rollBack();
+
+            return response()->json([
+                'status' => false,
+                'message' => 'error ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function addDataFirstAppointment(Request $request)
+    {
+        $request->validate([
+            'user_id' => 'required|integer',
+            'doct_id' => 'required|integer',
+            'clinic_id' => 'required|integer',
+            'date' => 'required|date',
+            'time' => 'required',
+            'appointment_type' => 'required|string',
+            'total_amount' => 'nullable|numeric',
+            'fee' => 'nullable|numeric',
+            'invoice_description' => 'nullable|string',
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            $timeStamp = now();
+            $date = now()->toDateString();
+
+            $userId = (int) $request->user_id;
+            $doctorId = (int) $request->doct_id;
+            $clinicId = (int) $request->clinic_id;
+            $appointmentType = $request->type ?? $request->appointment_type;
+            $appointmentDay = date('l', strtotime($request->date));
+            $timeSlotValue = $request->time_slots ?? $request->time;
+            $amount = (float) ($request->total_amount ?? $request->fee ?? 0);
+            $fee = (float) ($request->fee ?? 0);
+
+            $doctor = DB::table('v_doctors')
+                ->select(
+                    'doctor_id',
+                    'clinic_id',
+                    'department',
+                    'active',
+                    'stop_booking',
+                    'clinic_appointment',
+                    'video_appointment',
+                    'emergency_appointment',
+                    'is_active'
+                )
+                ->where('doctor_id', $doctorId)
+                ->where('clinic_id', $clinicId)
+                ->where('is_active', 1)
+                ->first();
+
+            if (!$doctor) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Selected doctor does not belong to the selected clinic.',
+                ], 422);
+            }
+
+            if ((int) $doctor->active !== 1) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Selected doctor is inactive in this clinic.',
+                ], 422);
+            }
+
+            if ((int) $doctor->stop_booking === 1) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Selected doctor is not accepting appointments in this clinic.',
+                ], 422);
+            }
+
+            if ($appointmentType === 'OPD' && (int) $doctor->clinic_appointment !== 1) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Selected doctor does not accept OPD appointments.',
+                ], 422);
+            }
+
+            if ($appointmentType === 'Video Consultant' && (int) $doctor->video_appointment !== 1) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Selected doctor does not accept video appointments.',
+                ], 422);
+            }
+
+            if ($appointmentType === 'Emergency' && (int) $doctor->emergency_appointment !== 1) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Selected doctor does not accept emergency appointments.',
+                ], 422);
+            }
+
+            try {
+                $patient = $this->resolveOrCreatePatientByUserIdForClinic($userId, $clinicId);
+            } catch (\RuntimeException $e) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => $e->getMessage(),
+                ], 422);
+            }
+
+            $slotQuery = $appointmentType === 'Video Consultant'
+                ? TimeSlotsVideoModel::query()
+                : TimeSlotsModel::query();
+
+            $slotExists = $slotQuery
+                ->where('doct_id', $doctorId)
+                ->where('clinic_id', $clinicId)
+                ->where('day', $appointmentDay)
+                ->where('time_start', '<=', $request->time)
+                ->where('time_end', '>', $request->time)
+                ->exists();
+
+            if (!$slotExists) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Selected time slot is not available for this doctor in this clinic.',
+                ], 422);
+            }
+
+            $alreadyBooked = AppointmentModel::query()
+                ->where('doct_id', $doctorId)
+                ->where('clinic_id', $clinicId)
+                ->whereDate('date', $request->date)
+                ->where('time_slots', $timeSlotValue)
+                ->whereNotIn('status', ['Cancelled', 'Rejected'])
+                ->exists();
+
+            if ($alreadyBooked) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => false,
+                    'message' => 'This appointment slot is already booked.',
+                ], 422);
+            }
+
+            $idPaymentType = $request->id_payment_type
+                ? (int) $request->id_payment_type
+                : null;
+
+            $paymentType = null;
+            if ($idPaymentType) {
+                $paymentType = DB::table('payment_types')
+                    ->select('id', 'name', 'active')
+                    ->where('id', $idPaymentType)
+                    ->first();
+
+                if (!$paymentType || (int) $paymentType->active !== 1) {
+                    DB::rollBack();
+                    return response()->json([
+                        'status' => false,
+                        'message' => 'Invalid payment type.',
+                    ], 422);
+                }
+            }
+
+            $paymentStatus = $this->resolveAppointmentPaymentStatusByType($idPaymentType);
+
+            $appointment = new AppointmentModel();
+            $appointment->patient_id = (int) $patient->id;
+            $appointment->status = $request->status ?? 'Pending';
+            $appointment->date = $request->date;
+            $appointment->time_slots = $timeSlotValue;
+            $appointment->duration_minutes = $request->duration_minutes ?? 15;
+            $appointment->amount = $amount;
+            $appointment->doct_id = $doctorId;
+            $appointment->clinic_id = $clinicId;
+            $appointment->dept_id = $request->dept_id ?? $doctor->department;
+            $appointment->type = $appointmentType;
+            $appointment->id_payment = null;
+            $appointment->payment_status = $paymentStatus;
+            $appointment->payment_reference = $request->payment_reference ?? null;
+            $appointment->payment_provider = $request->payment_provider ?? null;
+            $appointment->source = $request->source ?? 'Android App';
+            $appointment->created_at = $timeStamp;
+            $appointment->updated_at = $timeStamp;
+
+            if ($paymentStatus === 'Paid') {
+                $appointment->payment_confirmed_at = $timeStamp;
+            }
+
+            $appointment->save();
+
+            if (isset($request->coupon_id)) {
+                $couponUse = new CouponUseModel();
+                $couponUse->user_id = $userId;
+                $couponUse->clinic_id = $clinicId;
+                $couponUse->appointment_id = $appointment->id;
+                $couponUse->coupon_id = $request->coupon_id;
+                $couponUse->created_at = $timeStamp;
+                $couponUse->updated_at = $timeStamp;
+                $couponUse->save();
+            }
+
+            if ($paymentStatus === 'Paid') {
+                $invoice = new AppointmentInvoiceModel();
+                $invoice->patient_id = (int) $patient->id;
+                $invoice->user_id = $userId;
+                $invoice->clinic_id = $clinicId;
+                $invoice->appointment_id = $appointment->id;
+                $invoice->status = $paymentStatus;
+                $invoice->total_amount = $amount;
+                $invoice->invoice_date = $date;
+                $invoice->created_at = $timeStamp;
+                $invoice->updated_at = $timeStamp;
+                $invoice->coupon_title = $request->coupon_title ?? null;
+                $invoice->coupon_value = $request->coupon_value ?? null;
+                $invoice->coupon_off_amount = $request->coupon_off_amount ?? null;
+                $invoice->coupon_id = $request->coupon_id ?? null;
+                $invoice->save();
+
+                $invoiceItem = new AppointmentInvoiceItemModel();
+                $invoiceItem->invoice_id = $invoice->id;
+                $invoiceItem->description = $request->invoice_description ?? $appointmentType;
+                $invoiceItem->quantity = 1;
+                $invoiceItem->clinic_id = $clinicId;
+                $invoiceItem->unit_price = $fee > 0 ? $fee : $amount;
+                $invoiceItem->service_charge = $request->service_charge ?? 0;
+                $invoiceItem->total_price = $request->unit_total_amount ?? $amount;
+                $invoiceItem->unit_tax = $request->tax ?? 0;
+                $invoiceItem->unit_tax_amount = $request->unit_tax_amount ?? 0;
+                $invoiceItem->created_at = $timeStamp;
+                $invoiceItem->updated_at = $timeStamp;
+                $invoiceItem->save();
+
+                if ($idPaymentType) {
+                    $providerReference = $request->provider_reference
+                        ?? ('APPT-' . $appointment->id . '-' . now()->timestamp);
+
+                    $paymentId = $this->createPaymentForAppointment(
+                        $appointment,
+                        $userId,
+                        $idPaymentType,
+                        $paymentType->name,
+                        $request->payment_provider ?? null,
+                        $request->payment_method_code ?? null,
+                        $providerReference,
+                        $amount
+                    );
+
+                    $appointment->id_payment = $paymentId;
+                    $appointment->save();
+                }
+            }
+
+            DB::commit();
+
+            $notificationCentralController = new NotificationCentralController();
+            $notificationCentralController->sendAppointmentNotificationToUsers($appointment->id);
+
+            return response()->json([
+                'response' => 200,
+                'status' => true,
+                'message' => 'successfully',
+                'message_detail' => 'First appointment created successfully.',
+                'data' => $appointment,
+                'id' => $appointment->id,
+                'appointment_id' => $appointment->id,
+            ], 200);
+        } catch (\Exception $e) {
+            DB::rollBack();
+
+            return response()->json([
+                'status' => false,
+                'message' => 'error ' . $e->getMessage(),
+            ], 500);
+        }
     }
 }
