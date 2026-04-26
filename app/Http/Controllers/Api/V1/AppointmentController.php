@@ -26,6 +26,8 @@ use App\Services\AgoraJoinDataService;
 use Illuminate\Support\Facades\Http;
 use App\Models\TimeSlotsModel;
 use App\Models\TimeSlotsVideoModel;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 
 class AppointmentController extends Controller
@@ -962,18 +964,34 @@ class AppointmentController extends Controller
     }
     public function addData(Request $request)
     {
-        $request->validate([
-            'patient_id' => 'required|integer',
-            'doct_id' => 'required|integer',
-            'clinic_id' => 'required|integer',
-            'date' => 'required|date',
-            'time' => 'required',
-            'appointment_type' => 'required|string',
-            'total_amount' => 'nullable|numeric',
-            'fee' => 'nullable|numeric',
-            'invoice_description' => 'nullable|string',
-        ]);
+        
+    Log::info('ADD_APPOINTMENT_REQUEST', $request->all());
 
+        try {
+            $validated = $request->validate([
+                'patient_id' => 'required|integer',
+                'doct_id' => 'required|integer',
+                'clinic_id' => 'required|integer',
+                'date' => 'required|date',
+                'time' => 'required',
+                'appointment_type' => 'required|string',
+                'total_amount' => 'nullable|numeric',
+                'fee' => 'nullable|numeric',
+                'invoice_description' => 'nullable|string',
+            ]);
+        } catch (ValidationException $e) {
+            Log::error('ADD_APPOINTMENT_VALIDATION_ERROR', [
+                'errors' => $e->errors(),
+                'input' => $request->all(),
+            ]);
+
+            return response()->json([
+                'status' => false,
+                'message' => 'Validation error',
+                'errors' => $e->errors(),
+                'input' => $request->all(),
+            ], 422);
+        }
         try {
             DB::beginTransaction();
 

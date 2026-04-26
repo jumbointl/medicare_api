@@ -140,57 +140,108 @@ function updateData(Request $request){
                // get data
 
 public function getData(Request $request)
-    {
+{
+    $clinicId = $request->input('clinic_id');
+    $clinicIds = $request->input('clinic_ids');
 
-      $query = DB::table("cities")
-      ->select('cities.*',
-      'states.title as state_title'
-      )
-        ->join('states', 'states.id', '=', 'cities.state_id');
-      
+    /*
+     * When clinic_id or clinic_ids is provided, only return cities linked
+     * to those clinics. This is used by the web app when fixed clinics are
+     * configured through VITE_CLINIC_ID / VITE_CLINIC_IDS.
+     */
+    if (!empty($clinicId) || !empty($clinicIds)) {
+        $query = DB::table('view_city_clinics')
+            ->select(
+                'city_id as id',
+                'city_title as title',
+                'city_latitude as latitude',
+                'city_longitude as longitude',
+                'clinic_id',
+                'clinic_title',
+                'clinic_active',
+                'clinic_stop_booking',
+                'doctor_count',
+                'single_doctor_id',
+                'single_doctor_name',
+                'single_doctor_image',
+                'single_department_title',
+                'single_doctor_specialization'
+            );
 
-   // Apply the 'active' filter if it's passed in the request
+        if (!empty($request->active)) {
+            $query->where('clinic_active', (int) $request->active);
+        }
 
-    if (!empty($request->active)) {
-    $query->where('cities.active', '=', $request->active);
-  }
-    
+        if (!empty($clinicId)) {
+            $query->where('clinic_id', (int) $clinicId);
+        }
+
+        if (!empty($clinicIds)) {
+            if (is_string($clinicIds)) {
+                $clinicIds = explode(',', $clinicIds);
+            }
+
+            $clinicIds = collect($clinicIds)
+                ->map(fn ($id) => (int) trim($id))
+                ->filter(fn ($id) => $id > 0)
+                ->values()
+                ->all();
+
+            if (!empty($clinicIds)) {
+                $query->whereIn('clinic_id', $clinicIds);
+            }
+        }
 
         if (!empty($request->search)) {
+            $search = $request->input('search');
+
+            $query->where(function ($q) use ($search) {
+                $q->where('city_title', 'like', '%' . $search . '%')
+                    ->orWhere('clinic_title', 'like', '%' . $search . '%')
+                    ->orWhere('single_doctor_name', 'like', '%' . $search . '%')
+                    ->orWhere('single_department_title', 'like', '%' . $search . '%');
+            });
+        }
+
+        $data = $query
+            ->orderBy('city_title', 'asc')
+            ->get();
+
+        return response([
+            'response' => 200,
+            'data' => $data,
+        ], 200);
+    }
+
+    $query = DB::table("cities")
+        ->select(
+            'cities.*',
+            'states.title as state_title'
+        )
+        ->join('states', 'states.id', '=', 'cities.state_id');
+
+    if (!empty($request->active)) {
+        $query->where('cities.active', '=', (int) $request->active);
+    }
+
+    if (!empty($request->search)) {
         $search = $request->input('search');
+
         $query->where(function ($q) use ($search) {
             $q->where('cities.title', 'like', '%' . $search . '%')
                 ->orWhere('states.title', 'like', '%' . $search . '%');
         });
     }
 
+    $data = $query
+        ->orderBy('cities.created_at', 'desc')
+        ->get();
 
-    $data = $query->OrderBy('cities.created_at', 'desc')->get();
-    
-
-            $response = [
-                "response"=>200,
-                'data'=>$data,
-            ];
-        
-      return response($response, 200);
-        }
-
-        function getDataActive()
-        {
-    
-          $data = DB::table("cities")
-          ->select('cities.*')
-          ->where('active',1)
-            ->get();
-          
-                $response = [
-                    "response"=>200,
-                    'data'=>$data,
-                ];
-            
-          return response($response, 200);
-            }
+    return response([
+        "response" => 200,
+        'data' => $data,
+    ], 200);
+}
     
 
         
@@ -324,6 +375,7 @@ public function getData(Request $request)
     // Return default city and state
     return response()->json($response);
 }
+
 
 private function getCityStateFromCoordinates($latitude, $longitude)
 

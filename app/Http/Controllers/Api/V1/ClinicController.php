@@ -225,7 +225,7 @@ class ClinicController extends Controller
 
     // get data
 
-    function getData(Request $request)
+    public function getData(Request $request)
     {
         // Define the base query
         $query = DB::table("clinics")
@@ -238,36 +238,70 @@ class ClinicController extends Controller
             ->join('states', 'states.id', '=', 'cities.state_id')
             ->orderBy('clinics.created_at', 'desc');
 
-        // Apply filters
+        // Apply city filter
         if (!empty($request->city_id)) {
-            $query->where('clinics.city_id', $request->city_id);
+            $query->where('clinics.city_id', (int) $request->city_id);
         }
 
-        if (!empty($request->active)) {
-            $query->where('clinics.active', '=', $request->active);
-            $query->where('cities.active', '=', $request->active);
+        // Apply active filter
+        if ($request->has('active') && $request->active !== '') {
+            $active = (int) $request->active;
+
+            $query->where('clinics.active', $active);
+            $query->where('cities.active', $active);
         }
 
+        // Apply single clinic filter
         if (!empty($request->clinic_id)) {
-            $query->where('clinics.id', '=', $request->clinic_id);
+            $query->where('clinics.id', (int) $request->clinic_id);
         }
 
-        if ($request->has('search')) {
-            $search = $request->input('search');
+        /*
+        * Apply multiple clinic filter.
+        * Example from frontend:
+        * get_clinic?active=1&clinic_ids=5,6,7
+        */
+        if (!empty($request->clinic_ids)) {
+            $clinicIds = $request->clinic_ids;
+
+            if (is_string($clinicIds)) {
+                $clinicIds = explode(',', $clinicIds);
+            }
+
+            $clinicIds = collect($clinicIds)
+                ->map(fn ($id) => (int) trim($id))
+                ->filter(fn ($id) => $id > 0)
+                ->values()
+                ->all();
+
+            if (!empty($clinicIds)) {
+                $query->whereIn('clinics.id', $clinicIds);
+            }
+        }
+
+        // Apply search filter
+        if ($request->has('search') && trim((string) $request->search) !== '') {
+            $search = trim((string) $request->input('search'));
+
             $query->where(function ($q) use ($search) {
                 $q->where('clinics.title', 'like', '%' . $search . '%')
-                    ->orWhere('clinics.address', 'like', '%' . $search . '%');
+                    ->orWhere('clinics.address', 'like', '%' . $search . '%')
+                    ->orWhere('cities.title', 'like', '%' . $search . '%')
+                    ->orWhere('states.title', 'like', '%' . $search . '%');
             });
         }
 
         // Get total records before pagination
-        $total_record = $query->count();
+        $total_record = (clone $query)->count();
 
         // Handle pagination only if both 'start' and 'end' are provided and valid
         if ($request->filled(['start', 'end'])) {
-            $start = $request->start;
-            $end = $request->end;
-            $query->skip($start)->take($end - $start);
+            $start = max((int) $request->start, 0);
+            $end = max((int) $request->end, $start);
+
+            if ($end > $start) {
+                $query->skip($start)->take($end - $start);
+            }
         }
 
         // Fetch the data

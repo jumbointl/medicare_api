@@ -14,5 +14,14 @@ class PaymentTypeModel extends Model
         'id',
         'name',
         'active',
+        'opd', 
+        'video', 
+        'emergency'
+    ];
+    protected $casts = [
+        'active' => 'boolean',
+        'opd' => 'boolean',
+        'video' => 'boolean',
+        'emergency' => 'boolean',
     ];
 }

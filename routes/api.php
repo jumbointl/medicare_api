@@ -114,7 +114,7 @@ use App\Http\Controllers\Api\V1\ClinicDoctorBrowseController;
 
 Route::prefix('v1')->group(function () {
 
-
+    Route::get('get_payment_types', [PaymentTypeController::class, 'getData']);
     Route::get('get_city_clinics', [ClinicDoctorBrowseController::class, 'getCityClinics']);
     Route::get('get_clinic_doctors', [ClinicDoctorBrowseController::class, 'getClinicDoctors']);
     Route::get('get_city_clinics_with_doctors', [ClinicDoctorBrowseController::class, 'getCityClinicsWithDoctors']);
@@ -208,7 +208,7 @@ Route::group(['prefix' => 'v1', 'namespace' => 'api\v1', 'middleware' => 'auth:s
 
     Route::post("payment_initiate", [PaymentInitiateController::class, 'initiate']);
 
-    Route::get('get_payment_types', [PaymentTypeController::class, 'getData']);
+    
     //Users
 
     Route::post("update_password", [UserController::class, 'updatePassword']);
