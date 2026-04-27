@@ -63,7 +63,20 @@ class DoctorWebAppointmentController extends Controller
             ->orderByDesc('appointments.date')
             ->orderByDesc('appointments.time_slots');
 
-        if ($clinicId !== '' && $clinicId !== 'all') {
+        // clinic_ids takes precedence: if multiple → whereIn, if 1 → where=,
+        // falls back to clinic_id when clinic_ids absent.
+        $clinicIdsRaw = trim((string) $request->get('clinic_ids', ''));
+        if ($clinicIdsRaw !== '') {
+            $clinicIds = array_values(array_filter(
+                array_map('intval', array_map('trim', explode(',', $clinicIdsRaw))),
+                fn($v) => $v > 0
+            ));
+            if (count($clinicIds) === 1) {
+                $query->where('appointments.clinic_id', '=', $clinicIds[0]);
+            } elseif (count($clinicIds) > 1) {
+                $query->whereIn('appointments.clinic_id', $clinicIds);
+            }
+        } elseif ($clinicId !== '' && $clinicId !== 'all') {
             $query->where('appointments.clinic_id', $clinicId);
         }
 

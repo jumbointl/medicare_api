@@ -334,6 +334,19 @@ class DoctorController extends Controller
                 if (isset($request->stop_booking)) {
                     $dataModel->stop_booking = $request->stop_booking;
                 }
+
+                if (isset($request->auto_rescheduled_allowed)) {
+                    $dataModel->auto_rescheduled_allowed = (int) $request->auto_rescheduled_allowed;
+                }
+                if (isset($request->video_auto_rescheduled_allowed)) {
+                    $dataModel->video_auto_rescheduled_allowed = (int) $request->video_auto_rescheduled_allowed;
+                }
+                if (isset($request->auto_rescheduled_allowed_before_minutes)) {
+                    $dataModel->auto_rescheduled_allowed_before_minutes = (int) $request->auto_rescheduled_allowed_before_minutes;
+                }
+                if (isset($request->video_auto_rescheduled_allowed_before_minutes)) {
+                    $dataModel->video_auto_rescheduled_allowed_before_minutes = (int) $request->video_auto_rescheduled_allowed_before_minutes;
+                }
             } else {
                 DB::rollBack();
                 return Helpers::errorResponse("error");
@@ -361,6 +374,10 @@ class DoctorController extends Controller
 
         if ($request->filled('doctor_id')) {
             $query->where('doctor_id', (int) $request->doctor_id);
+        }
+
+        if ($request->filled('user_id')) {
+            $query->where('user_id', (int) $request->user_id);
         }
 
         if ($request->filled('clinic_id')) {
@@ -442,6 +459,10 @@ class DoctorController extends Controller
             'opd_fee' => $first->opd_fee,
             'video_fee' => $first->video_fee,
             'emg_fee' => $first->emg_fee,
+            'auto_rescheduled_allowed' => $first->auto_rescheduled_allowed ?? 0,
+            'video_auto_rescheduled_allowed' => $first->video_auto_rescheduled_allowed ?? 0,
+            'auto_rescheduled_allowed_before_minutes' => $first->auto_rescheduled_allowed_before_minutes ?? 1440,
+            'video_auto_rescheduled_allowed_before_minutes' => $first->video_auto_rescheduled_allowed_before_minutes ?? 1440,
             'clinics' => $rows->map(function ($row) {
                 return [
                     'clinic_id' => $row->clinic_id,

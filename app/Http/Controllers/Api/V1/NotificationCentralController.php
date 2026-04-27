@@ -14,6 +14,8 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use App\CentralLogics\Helpers;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Carbon\Carbon;
 
 
@@ -1439,11 +1441,183 @@ function sendNotificationToAllAdminAndFrontDesk($title,$body,$clinicId){
               app('App\Http\Controllers\Api\V1\SendNotificationController')->sendFirebaseNotificationToToken($title,$body,'',$user->fcm); 
           }
           if($user->web_fcm!=null){
-              app('App\Http\Controllers\Api\V1\SendNotificationController')->sendFirebaseNotificationToToken($title,$body,'',$user->web_fcm); 
+              app('App\Http\Controllers\Api\V1\SendNotificationController')->sendFirebaseNotificationToToken($title,$body,'',$user->web_fcm);
           }
     }
 
 }
+
+    private function loadAppointmentContext($appId)
+    {
+        $row = DB::table('appointments')
+            ->select(
+                'appointments.*',
+                'patients.user_id',
+                'patients.f_name as patient_f_name',
+                'patients.l_name as patient_l_name',
+                'pu.email as patient_email',
+                'du.f_name as doctor_f_name',
+                'du.l_name as doctor_l_name',
+                'du.email as doctor_email'
+            )
+            ->join('patients', 'patients.id', '=', 'appointments.patient_id')
+            ->leftJoin('users as pu', 'pu.id', '=', 'patients.user_id')
+            ->leftJoin('users as du', 'du.id', '=', 'appointments.doct_id')
+            ->where('appointments.id', $appId)
+            ->first();
+
+        if (!$row) return null;
+
+        try {
+            $time = Carbon::createFromFormat('H:i:s', $row->time_slots)->format('h:i A');
+        } catch (\Throwable $e) {
+            $time = (string) $row->time_slots;
+        }
+
+        return [
+            'row' => $row,
+            'doctorName' => trim(($row->doctor_f_name ?? '') . ' ' . ($row->doctor_l_name ?? '')),
+            'patientName' => trim(($row->patient_f_name ?? '') . ' ' . ($row->patient_l_name ?? '')),
+            'date' => Carbon::parse($row->date)->format('jS F Y'),
+            'time' => $time,
+        ];
+    }
+
+    public function sendRescheduleRequestedNotification($appId, $requestedDate, $requestedTimeSlots, $notes = null)
+    {
+        $ctx = $this->loadAppointmentContext($appId);
+        if (!$ctx) return;
+
+        try {
+            $reqTime = Carbon::createFromFormat('H:i:s', $requestedTimeSlots)->format('h:i A');
+        } catch (\Throwable $e) {
+            try {
+                $reqTime = Carbon::createFromFormat('H:i', $requestedTimeSlots)->format('h:i A');
+            } catch (\Throwable $e2) {
+                $reqTime = (string) $requestedTimeSlots;
+            }
+        }
+        $reqDate = Carbon::parse($requestedDate)->format('jS F Y');
+
+        $title = 'Reschedule requested';
+        $userBody = "Your reschedule request for the appointment with Dr. {$ctx['doctorName']} on {$ctx['date']} at {$ctx['time']} (new: $reqDate at $reqTime) was sent. We will notify you once it is reviewed.";
+        $doctorBody = "Patient {$ctx['patientName']} requested to reschedule the appointment from {$ctx['date']} at {$ctx['time']} to $reqDate at $reqTime.";
+
+        if (!empty($ctx['row']->user_id)) {
+            $this->addUserNotificationTable($title, $userBody, $ctx['row']->user_id, $appId, null, null, null);
+        }
+        if (!empty($ctx['row']->doct_id)) {
+            $this->addDoctorNotificationTable($title, $doctorBody, $ctx['row']->doct_id, $appId, null, null);
+        }
+        $this->addAdminotificationTable($title, $doctorBody, $appId, null);
+
+        $payload = [
+            'recipientName' => $ctx['patientName'],
+            'intro' => "Your reschedule request was sent to Dr. {$ctx['doctorName']} for review.",
+            'originalDate' => $ctx['date'],
+            'originalTime' => $ctx['time'],
+            'requestedDate' => $reqDate,
+            'requestedTime' => $reqTime,
+            'notes' => $notes,
+            'closing' => 'You will be notified once the request is reviewed.',
+        ];
+        $this->safeSendMail($ctx['row']->patient_email ?? null, 'Reschedule request sent', 'emails.reschedule_requested', $payload);
+
+        if (!empty($ctx['row']->doctor_email)) {
+            $payloadDoctor = array_merge($payload, [
+                'recipientName' => 'Dr. ' . $ctx['doctorName'],
+                'intro' => "Patient {$ctx['patientName']} requested to reschedule.",
+                'closing' => 'Please review and approve or reject the request.',
+            ]);
+            $this->safeSendMail($ctx['row']->doctor_email, 'New reschedule request', 'emails.reschedule_requested', $payloadDoctor);
+        }
+    }
+
+    public function sendRescheduleApprovedNotification($appId, $previousDate, $previousTimeSlots)
+    {
+        $ctx = $this->loadAppointmentContext($appId);
+        if (!$ctx) return;
+
+        try {
+            $prevTime = Carbon::createFromFormat('H:i:s', $previousTimeSlots)->format('h:i A');
+        } catch (\Throwable $e) {
+            $prevTime = (string) $previousTimeSlots;
+        }
+        $prevDate = Carbon::parse($previousDate)->format('jS F Y');
+
+        $title = 'Reschedule approved';
+        $userBody = "Your reschedule request was approved. The appointment with Dr. {$ctx['doctorName']} is now on {$ctx['date']} at {$ctx['time']} (was $prevDate at $prevTime).";
+        $doctorBody = "You approved the reschedule for {$ctx['patientName']}: now {$ctx['date']} at {$ctx['time']} (was $prevDate at $prevTime).";
+
+        if (!empty($ctx['row']->user_id)) {
+            $this->addUserNotificationTable($title, $userBody, $ctx['row']->user_id, $appId, null, null, null);
+        }
+        if (!empty($ctx['row']->doct_id)) {
+            $this->addDoctorNotificationTable($title, $doctorBody, $ctx['row']->doct_id, $appId, null, null);
+        }
+        $this->addAdminotificationTable($title, $userBody, $appId, null);
+
+        $payload = [
+            'recipientName' => $ctx['patientName'],
+            'doctorName' => $ctx['doctorName'],
+            'originalDate' => $prevDate,
+            'originalTime' => $prevTime,
+            'newDate' => $ctx['date'],
+            'newTime' => $ctx['time'],
+        ];
+        $this->safeSendMail($ctx['row']->patient_email ?? null, 'Reschedule approved', 'emails.reschedule_approved', $payload);
+    }
+
+    public function sendRescheduleRejectedNotification($appId, $requestedDate, $requestedTimeSlots, $notes = null)
+    {
+        $ctx = $this->loadAppointmentContext($appId);
+        if (!$ctx) return;
+
+        try {
+            $reqTime = Carbon::createFromFormat('H:i:s', $requestedTimeSlots)->format('h:i A');
+        } catch (\Throwable $e) {
+            try {
+                $reqTime = Carbon::createFromFormat('H:i', $requestedTimeSlots)->format('h:i A');
+            } catch (\Throwable $e2) {
+                $reqTime = (string) $requestedTimeSlots;
+            }
+        }
+        $reqDate = Carbon::parse($requestedDate)->format('jS F Y');
+
+        $title = 'Reschedule rejected';
+        $userBody = "Your reschedule request to $reqDate at $reqTime was rejected. The appointment with Dr. {$ctx['doctorName']} remains on {$ctx['date']} at {$ctx['time']}.";
+
+        if (!empty($ctx['row']->user_id)) {
+            $this->addUserNotificationTable($title, $userBody, $ctx['row']->user_id, $appId, null, null, null);
+        }
+        $this->addAdminotificationTable($title, $userBody, $appId, null);
+
+        $payload = [
+            'recipientName' => $ctx['patientName'],
+            'originalDate' => $ctx['date'],
+            'originalTime' => $ctx['time'],
+            'requestedDate' => $reqDate,
+            'requestedTime' => $reqTime,
+            'notes' => $notes,
+        ];
+        $this->safeSendMail($ctx['row']->patient_email ?? null, 'Reschedule rejected', 'emails.reschedule_rejected', $payload);
+    }
+
+    private function safeSendMail($to, $subject, $view, $data)
+    {
+        if (empty($to)) return;
+        try {
+            Mail::send($view, $data, function ($message) use ($to, $subject) {
+                $message->to($to)->subject($subject);
+            });
+        } catch (\Throwable $e) {
+            Log::warning('Email send failed', [
+                'to' => $to,
+                'subject' => $subject,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
 
 }
 

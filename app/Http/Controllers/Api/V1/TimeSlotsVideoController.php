@@ -188,47 +188,6 @@ class TimeSlotsVideoController extends Controller
         ], 200);
     }
 
-    public function getDoctorClinicTimeInterval($doctorId, $clinicId, $day)
-    {
-        $data = TimeSlotsVideoModel::query()
-            ->where('doct_id', $doctorId)
-            ->where('clinic_id', $clinicId)
-            ->where('day', $day)
-            ->orderBy('time_start', 'ASC')
-            ->get();
-
-        $slots = [];
-
-        foreach ($data as $timeSlot) {
-            $start_time = strtotime($timeSlot->time_start);
-            $end_time = strtotime($timeSlot->time_end);
-            $time_duration = (int) $timeSlot->time_duration;
-
-            if ($time_duration <= 0) {
-                continue;
-            }
-
-            $current_time = $start_time;
-
-            while ($current_time <= $end_time) {
-                $slot_start = date('H:i', $current_time);
-                $current_time += $time_duration * 60;
-                $slot_end = date('H:i', $current_time);
-
-                if ($current_time <= $end_time) {
-                    $slots[] = [
-                        'time_start' => $slot_start,
-                        'time_end' => $slot_end,
-                    ];
-                }
-            }
-        }
-
-        return response()->json([
-            'response' => 200,
-            'data' => $slots,
-        ], 200);
-    }
     public function getDoctorClinicVideoSlots($doctorId, $clinicId)
     {
         $data = TimeSlotsVideoModel::query()

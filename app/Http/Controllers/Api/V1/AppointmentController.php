@@ -7,10 +7,12 @@ use Illuminate\Http\Request;
 use App\Models\AppointmentModel;
 use App\Models\AppointmentInvoiceModel;
 use App\Models\AppointmentPaymentModel;
+use App\Models\AppointmentRescheduleReqModel;
 use App\Models\AppointmentStatusLogModel;
 use App\Models\AppointmentInvoiceItemModel;
 use App\Models\AllTransactionModel;
 use App\Models\User;
+use Carbon\Carbon;
 use App\Models\FamilyMembersModel;
 use App\Models\PatientModel;
 use Illuminate\Support\Facades\Validator;
@@ -278,6 +280,186 @@ class AppointmentController extends Controller
         } catch (\Exception $e) {
             DB::rollBack();
             return Helpers::errorResponse("error $e");
+        }
+    }
+
+    public function userAppointmentReschedule(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'id' => 'required',
+            'date' => 'required|date',
+            'time_slots' => 'required|string',
+        ]);
+        if ($validator->fails()) {
+            return response(["response" => 400], 400);
+        }
+
+        try {
+            $appointmentModel = AppointmentModel::where('id', $request->id)->first();
+            if ($appointmentModel == null) {
+                return Helpers::errorResponse("error");
+            }
+            if (in_array($appointmentModel->status, ['Cancelled', 'Rejected', 'Visited', 'Completed'])) {
+                return Helpers::errorResponse("Cannot reschedule this appointment");
+            }
+
+            $isPaid = $appointmentModel->payment_status === 'Paid';
+
+            if (!$isPaid) {
+                return $this->performRescheduleInternal($appointmentModel, $request->date, $request->time_slots);
+            }
+
+            $doctor = DB::table('doctors')->where('id', $appointmentModel->doct_id)->first();
+            $isVideo = $appointmentModel->type === 'Video Consultant';
+            $allowedFlag = $isVideo
+                ? ($doctor->video_auto_rescheduled_allowed ?? 0)
+                : ($doctor->auto_rescheduled_allowed ?? 0);
+            $beforeMinutes = $isVideo
+                ? ($doctor->video_auto_rescheduled_allowed_before_minutes ?? 1440)
+                : ($doctor->auto_rescheduled_allowed_before_minutes ?? 1440);
+
+            $startAt = $this->parseAppointmentStart($appointmentModel->date, $appointmentModel->time_slots);
+            $deadline = $startAt ? $startAt->copy()->subMinutes((int) $beforeMinutes) : null;
+            $beforeDeadline = $deadline && now()->lt($deadline);
+
+            if ((int) $allowedFlag === 1 && $beforeDeadline) {
+                return $this->performRescheduleInternal($appointmentModel, $request->date, $request->time_slots);
+            }
+
+            DB::beginTransaction();
+            $timeStamp = date('Y-m-d H:i:s');
+
+            $existingInitiated = AppointmentRescheduleReqModel::where('appointment_id', $appointmentModel->id)
+                ->where('status', 'Initiated')
+                ->first();
+            if ($existingInitiated) {
+                DB::rollBack();
+                return response([
+                    'response' => 200,
+                    'success' => false,
+                    'mode' => 'reschedule_request',
+                    'reason' => 'Already requested',
+                    'reschedule_request_id' => $existingInitiated->id,
+                ], 200);
+            }
+
+            $reschReq = new AppointmentRescheduleReqModel;
+            $reschReq->appointment_id = $appointmentModel->id;
+            $reschReq->status = 'Initiated';
+            $reschReq->requested_date = $request->date;
+            $reschReq->requested_time_slots = $request->time_slots;
+            if ($request->filled('notes')) {
+                $reschReq->notes = $request->notes;
+            }
+            $reschReq->created_at = $timeStamp;
+            $reschReq->updated_at = $timeStamp;
+            $reschReq->save();
+
+            $appointmentData = DB::table('appointments')
+                ->select('appointments.*', 'patients.user_id')
+                ->join('patients', 'patients.id', '=', 'appointments.patient_id')
+                ->where('appointments.id', $appointmentModel->id)
+                ->first();
+
+            $log = new AppointmentStatusLogModel;
+            $log->appointment_id = $appointmentModel->id;
+            $log->user_id = $appointmentData->user_id ?? null;
+            $log->patient_id = $appointmentData->patient_id ?? null;
+            $log->clinic_id = $appointmentModel->clinic_id;
+            $log->status = 'RescheduleRequested';
+            $log->notes = 'User requested reschedule to ' . $request->date . ' ' . $request->time_slots
+                . ' (auto_allowed=' . (int) $allowedFlag . ', before_deadline=' . ($beforeDeadline ? '1' : '0') . ')';
+            $log->created_at = $timeStamp;
+            $log->updated_at = $timeStamp;
+            $log->save();
+
+            DB::commit();
+
+            (new NotificationCentralController())->sendRescheduleRequestedNotification(
+                $appointmentModel->id,
+                $request->date,
+                $request->time_slots,
+                $request->notes ?? null
+            );
+
+            return response([
+                'response' => 200,
+                'success' => true,
+                'mode' => 'reschedule_request',
+                'reschedule_request_id' => $reschReq->id,
+                'message' => 'Reschedule pending doctor approval',
+            ], 200);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return Helpers::errorResponse("error");
+        }
+    }
+
+    private function performRescheduleInternal(AppointmentModel $appointmentModel, $newDate, $newTimeSlots)
+    {
+        try {
+            DB::beginTransaction();
+            $timeStamp = date('Y-m-d H:i:s');
+            $oldDate = $appointmentModel->date;
+            $oldTime = $appointmentModel->time_slots;
+
+            $appointmentModel->status = 'Rescheduled';
+            $appointmentModel->date = $newDate;
+            $appointmentModel->time_slots = $newTimeSlots;
+            $appointmentModel->updated_at = $timeStamp;
+            $appointmentModel->save();
+
+            $appointmentData = DB::table('appointments')
+                ->select('appointments.*', 'patients.user_id')
+                ->join('patients', 'patients.id', '=', 'appointments.patient_id')
+                ->where('appointments.id', $appointmentModel->id)
+                ->first();
+
+            $log = new AppointmentStatusLogModel;
+            $log->appointment_id = $appointmentModel->id;
+            $log->user_id = $appointmentData->user_id ?? null;
+            $log->patient_id = $appointmentData->patient_id ?? null;
+            $log->clinic_id = $appointmentModel->clinic_id;
+            $log->status = 'Rescheduled';
+            $log->notes = 'Appointment ' . $oldDate . ' ' . $oldTime . ' rescheduled to ' . $newDate . ' ' . $newTimeSlots . ' (user-initiated)';
+            $log->created_at = $timeStamp;
+            $log->updated_at = $timeStamp;
+            $log->save();
+
+            DB::commit();
+
+            if ($appointmentModel->type === 'Video Consultant') {
+                $zoomController = new ZoomVideoCallController();
+                $zoomController->updateMeeting($appointmentModel->id, $appointmentModel->meeting_id, $newDate, $newTimeSlots);
+            }
+
+            $notif = new NotificationCentralController();
+            $notif->sendWalletRshNotificationToUsersAgainstRejected($appointmentModel->id, $oldDate, $oldTime);
+
+            return response([
+                'response' => 200,
+                'success' => true,
+                'mode' => 'rescheduled',
+                'appointment_id' => $appointmentModel->id,
+            ], 200);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return Helpers::errorResponse("error");
+        }
+    }
+
+    private function parseAppointmentStart($date, $timeSlots): ?Carbon
+    {
+        if (empty($date) || empty($timeSlots)) {
+            return null;
+        }
+        if (!preg_match('/(\d{1,2}):(\d{2})/', (string) $timeSlots, $matches)) {
+            return null;
+        }
+        try {
+            return Carbon::parse($date)->setTime((int) $matches[1], (int) $matches[2], 0);
+        } catch (\Throwable $e) {
+            return null;
         }
     }
 
@@ -575,7 +757,19 @@ class AppointmentController extends Controller
             $query->where('appointments.doct_id', '=', $request->doct_id);
         }
 
-        if ($request->filled('clinic_id')) {
+        // clinic_ids takes precedence over clinic_id. If multiple → whereIn,
+        // if exactly 1 → where=, falls back to clinic_id when clinic_ids missing.
+        if ($request->filled('clinic_ids')) {
+            $clinicIds = array_values(array_filter(
+                array_map('intval', array_map('trim', explode(',', (string) $request->clinic_ids))),
+                fn($v) => $v > 0
+            ));
+            if (count($clinicIds) === 1) {
+                $query->where('appointments.clinic_id', '=', $clinicIds[0]);
+            } elseif (count($clinicIds) > 1) {
+                $query->whereIn('appointments.clinic_id', $clinicIds);
+            }
+        } elseif ($request->filled('clinic_id')) {
             $query->where('appointments.clinic_id', '=', $request->clinic_id);
         }
 
@@ -969,12 +1163,18 @@ class AppointmentController extends Controller
 
         try {
             $validated = $request->validate([
-                'patient_id' => 'required|integer',
+                // patient_id is optional when user_id is present (resolved
+                // server-side via resolveOrCreatePatientByUserIdForClinic).
+                'patient_id' => 'sometimes|nullable|integer',
+                'user_id' => 'required_without:patient_id|integer',
                 'doct_id' => 'required|integer',
                 'clinic_id' => 'required|integer',
                 'date' => 'required|date',
-                'time' => 'required',
-                'appointment_type' => 'required|string',
+                // Accept either name; controller logic already reads both.
+                'time' => 'required_without:time_slots',
+                'time_slots' => 'required_without:time',
+                'appointment_type' => 'required_without:type',
+                'type' => 'required_without:appointment_type',
                 'total_amount' => 'nullable|numeric',
                 'fee' => 'nullable|numeric',
                 'invoice_description' => 'nullable|string',
@@ -1071,6 +1271,25 @@ class AppointmentController extends Controller
                     'status' => false,
                     'message' => 'Selected doctor does not accept emergency appointments.',
                 ], 422);
+            }
+
+            // If patient_id was omitted/empty but the request includes a
+            // user_id, resolve (or create) the patient row owned by that user
+            // for this clinic. Mirrors the addDataFirstAppointment path.
+            if ($patientId <= 0 && $request->filled('user_id')) {
+                try {
+                    $resolved = $this->resolveOrCreatePatientByUserIdForClinic(
+                        (int) $request->user_id,
+                        $clinicId
+                    );
+                    $patientId = (int) $resolved->id;
+                } catch (\RuntimeException $e) {
+                    DB::rollBack();
+                    return response()->json([
+                        'status' => false,
+                        'message' => $e->getMessage(),
+                    ], 422);
+                }
             }
 
             try {

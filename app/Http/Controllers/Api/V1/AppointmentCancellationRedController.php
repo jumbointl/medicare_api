@@ -6,10 +6,15 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\AppointmentCancellationRedModel;
 use App\Models\AppointmentModel;
+use App\Models\PaymentModel;
 use App\Models\User;
 use App\Models\AppointmentInvoiceModel;
 use App\Models\AppointmentStatusLogModel;
 use App\Models\AllTransactionModel;
+use App\Services\Bancard\Card\BancardCardClient;
+use App\Services\Bancard\Card\BancardCardPaymentService;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use App\CentralLogics\Helpers;
 use Illuminate\Support\Facades\DB;
@@ -201,12 +206,107 @@ class AppointmentCancellationRedController extends Controller
                 $appointmentModel = AppointmentModel::where("id", $request->appointment_id)->first();
               
                 if($appointmentModel==null){
-                    DB::rollBack(); 
+                    DB::rollBack();
                     return Helpers::errorResponse("error");
                 }
+
+                // Bancard branch: id_payment_type=7500 + Paid + same-day-of-payment_confirmed_at
+                $paymentModel = $appointmentModel->id_payment
+                    ? PaymentModel::find($appointmentModel->id_payment)
+                    : null;
+                $idPaymentType = $paymentModel ? (int) $paymentModel->id_payment_type : 0;
+
+                if ($idPaymentType === 7500 && $appointmentModel->payment_status === 'Paid') {
+                    $confirmedAt = $appointmentModel->payment_confirmed_at;
+                    $sameDay = $confirmedAt && Carbon::parse($confirmedAt)->isSameDay(now());
+
+                    $bancardOk = false;
+                    if ($sameDay && $paymentModel && $paymentModel->provider === 'bancard' && $paymentModel->provider_reference) {
+                        try {
+                            $client = app(BancardCardClient::class);
+                            $rollbackResp = $client->rollback($paymentModel->provider_reference);
+                            $service = app(BancardCardPaymentService::class);
+                            $service->cancelAndRollbackAppointmentPayment($paymentModel, $rollbackResp);
+                            $bancardOk = true;
+                        } catch (\Throwable $e) {
+                            Log::warning('Bancard rollback failed in cancleAndRefund', [
+                                'appointment_id' => $appointmentModel->id,
+                                'error' => $e->getMessage(),
+                            ]);
+                        }
+                    }
+
+                    if (!$bancardOk) {
+                        DB::rollBack();
+                        return response([
+                            'response' => 200,
+                            'success' => false,
+                            'redirect_to_reschedule' => true,
+                            'appointment_id' => $appointmentModel->id,
+                            'reason' => $sameDay
+                                ? 'Bancard rollback failed — please reschedule (manual refund via Bancard web)'
+                                : 'Card payment outside same-day window — please reschedule (manual refund via Bancard web)',
+                        ], 200);
+                    }
+
+                    // Bancard rollback OK — finalize cancellation, refund went directly to card
+                    $appointmentModel->refresh();
+                    $appointmentModel->status = 'Cancelled';
+                    $appointmentModel->payment_status = 'Refunded';
+                    $appointmentModel->current_cancel_req_status = $request->status;
+                    $appointmentModel->updated_at = $timeStamp;
+                    $appointmentModel->save();
+
+                    $cancelRed = new AppointmentCancellationRedModel;
+                    $cancelRed->appointment_id = $request->appointment_id;
+                    $cancelRed->status = $request->status;
+                    if (isset($request->notes)) {
+                        $cancelRed->notes = $request->notes;
+                    }
+                    $cancelRed->created_at = $timeStamp;
+                    $cancelRed->updated_at = $timeStamp;
+                    $cancelRed->save();
+
+                    $appointmentData = DB::table('appointments')
+                        ->select('appointments.*', 'patients.user_id')
+                        ->join('patients', 'patients.id', '=', 'appointments.patient_id')
+                        ->where('appointments.id', $appointmentModel->id)
+                        ->first();
+
+                    $log = new AppointmentStatusLogModel;
+                    $log->appointment_id = $appointmentModel->id;
+                    $log->user_id = $appointmentData->user_id ?? null;
+                    $log->patient_id = $appointmentData->patient_id ?? null;
+                    $log->clinic_id = $appointmentModel->clinic_id;
+                    $log->status = 'Cancelled';
+                    $log->notes = 'Cancelled and refunded via Bancard rollback';
+                    $log->created_at = $timeStamp;
+                    $log->updated_at = $timeStamp;
+                    $log->save();
+
+                    $invoiceModel = AppointmentInvoiceModel::where('appointment_id', $appointmentModel->id)->first();
+                    if ($invoiceModel) {
+                        $invoiceModel->status = 'Refunded';
+                        $invoiceModel->updated_at = $timeStamp;
+                        $invoiceModel->save();
+                    }
+
+                    DB::commit();
+
+                    if ($appointmentModel->type === 'Video Consultant') {
+                        $zoomController = new ZoomVideoCallController();
+                        $zoomController->deleteMeeting($appointmentModel->id, $appointmentModel->meeting_id);
+                    }
+
+                    $notif = new NotificationCentralController();
+                    $notif->sendAppointmentCancellationStatusNotificationToUsers($appointmentModel->id);
+
+                    return Helpers::successWithIdResponse('successfully cancelled and refunded via Bancard', $appointmentModel->id);
+                }
+
                 $current_cancel_req_status=$appointmentModel->current_cancel_req_status;
                 if($current_cancel_req_status==$request->status){
-                    DB::rollBack(); 
+                    DB::rollBack();
                     return Helpers::errorResponse("Already requested");
                 }
                 if(isset( $request->notes)){

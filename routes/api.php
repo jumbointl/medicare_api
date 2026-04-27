@@ -21,6 +21,7 @@ use App\Http\Controllers\Api\V1\LabTestController;
 use App\Http\Controllers\Api\V1\LabReqController;
 use App\Http\Controllers\Api\V1\DoctorsReviewController;
 use App\Http\Controllers\Api\V1\AppointmentCancellationRedController;
+use App\Http\Controllers\Api\V1\AppointmentRescheduleReqController;
 use App\Http\Controllers\Api\V1\PrescribeMedicinesController;
 use App\Http\Controllers\Api\V1\PrescriptionController;
 use App\Http\Controllers\Api\V1\AllTransactionController;
@@ -303,6 +304,7 @@ Route::group(['prefix' => 'v1', 'namespace' => 'api\v1', 'middleware' => 'auth:s
     Route::post('add_first_appointment', [AppointmentController::class, 'addDataFirstAppointment']);
     Route::post("update_appointment_status", [AppointmentController::class, 'updateStatus']);
     Route::post("appointment_rescheduled", [AppointmentController::class, 'appointmentResch']);
+    Route::post("user_appointment_reschedule", [AppointmentController::class, 'userAppointmentReschedule']);
     Route::post("update_appointment_to_paid", [AppointmentController::class, 'updateStatusToPaid']);
 
 
@@ -318,6 +320,14 @@ Route::group(['prefix' => 'v1', 'namespace' => 'api\v1', 'middleware' => 'auth:s
     Route::post("delete_appointment_cancellation_by_admin", [AppointmentCancellationRedController::class, 'deleteData']);
     Route::post("appointment_cancellation_and_refund", [AppointmentCancellationRedController::class, 'cancleAndRefund']);
     Route::post("appointment_reject_and_refund", [AppointmentCancellationRedController::class, 'RejectAndRefund']);
+
+    //Appointment Reschedule Request
+    Route::post("appointment_reschedule_request", [AppointmentRescheduleReqController::class, 'addRequest']);
+    Route::post("appointment_reschedule_request_approve", [AppointmentRescheduleReqController::class, 'approve']);
+    Route::post("appointment_reschedule_request_reject", [AppointmentRescheduleReqController::class, 'reject']);
+    Route::post("delete_appointment_reschedule_request", [AppointmentRescheduleReqController::class, 'deleteByUser']);
+    Route::get("get_appointment_reschedule_requests/{id}", [AppointmentRescheduleReqController::class, 'getDataByAppointmentId']);
+    Route::get("get_initiated_reschedule_requests", [AppointmentRescheduleReqController::class, 'getInitiatedList']);
 
 
 
@@ -638,16 +648,10 @@ Route::group(['prefix' => 'v1', 'namespace' => 'api\v1', 'middleware' => 'api.ke
     Route::get("get_role_permisssion/{id}", [RolePermissionController::class, 'getDataById']);
     Route::get("get_role_permisssion/role/{id}", [RolePermissionController::class, 'getDataByRoleId']);
 
-    //Time Slots
-    Route::get("get_doctor_time_slots/{id}", [TimeSlotsController::class, 'getDataByDoctId']);
-    Route::get("get_doctor_time_interval/{id}/{day}", [TimeSlotsController::class, 'getDataDoctotToimeInterval']);
-
-
-    //Time Slots Video
-    Route::get("get_doctor_video_time_slots/{id}", [TimeSlotsVideoController::class, 'getDataByDoctId']);
-    Route::get("get_doctor_video_time_interval/{id}/{day}", [TimeSlotsVideoController::class, 'getDataDoctotToimeInterval']);
-
-
+    // Legacy time-slots routes removed 2026-04-26 — handlers no longer exist.
+    // Use the nested resource pattern declared near the top of this file:
+    //   /v1/doctors/{doctorId}/clinics/{clinicId}/(video-)time-slots
+    //   /v1/doctors/{doctorId}/clinics/{clinicId}/(video-)time-interval/{day}
 
     //Appointment
     Route::get("get_appointments", [AppointmentController::class, 'getData']);
